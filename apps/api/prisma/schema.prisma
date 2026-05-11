@@ -1,0 +1,203 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  BUYER
+  ORGANIZER
+  STAFF
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELED
+  REFUNDED
+}
+
+enum TicketStatus {
+  ACTIVE
+  TRANSFER_PENDING
+  TRANSFERRED
+  USED
+  REVOKED
+  EXPIRED
+}
+
+enum TransferStatus {
+  PENDING
+  ACCEPTED
+  CANCELED
+  EXPIRED
+  REJECTED
+}
+
+enum ScanResult {
+  VALID
+  INVALID
+  EXPIRED
+  ALREADY_USED
+  REVOKED
+  REPLAY_DETECTED
+}
+
+model User {
+  id                String       @id
+  email             String       @unique
+  fullName          String
+  role              UserRole     @default(BUYER)
+  emailVerified     Boolean      @default(false)
+  phoneVerified     Boolean      @default(false)
+  mfaEnabled        Boolean      @default(false)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  profile           Profile?
+  organizedEvents   Event[]      @relation("EventOrganizer")
+  orders            Order[]
+  ownedTickets      Ticket[]     @relation("TicketOwner")
+  sentTransfers     Transfer[]   @relation("TransferSender")
+  receivedTransfers Transfer[]   @relation("TransferRecipient")
+  scansPerformed    ScanLog[]    @relation("ScannedByStaff")
+
+  @@map("users")
+}
+
+model Profile {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  phone      String?
+  avatarUrl  String?
+  documentId String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model Event {
+  id              String    @id @default(uuid())
+  organizerId     String
+  title           String
+  description     String?
+  venueName       String
+  venueCity       String
+  startsAt        DateTime
+  endsAt          DateTime
+  isPublished     Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  organizer       User      @relation("EventOrganizer", fields: [organizerId], references: [id])
+  orders          Order[]
+  tickets         Ticket[]
+
+  @@index([organizerId])
+  @@index([startsAt])
+  @@map("events")
+}
+
+model Order {
+  id              String      @id @default(uuid())
+  buyerId         String
+  eventId         String
+  status          OrderStatus @default(PENDING)
+  totalAmount     Decimal     @db.Decimal(10, 2)
+  currency        String      @default("MXN")
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  buyer           User        @relation(fields: [buyerId], references: [id])
+  event           Event       @relation(fields: [eventId], references: [id])
+  tickets         Ticket[]
+
+  @@index([buyerId])
+  @@index([eventId])
+  @@map("orders")
+}
+
+model Ticket {
+  id                String       @id @default(uuid())
+  eventId           String
+  orderId           String
+  ownerId           String
+  seatLabel         String?
+  section           String?
+  ticketType        String?
+  price             Decimal      @db.Decimal(10, 2)
+  currency          String       @default("MXN")
+  status            TicketStatus @default(ACTIVE)
+  issuedAt          DateTime     @default(now())
+  usedAt            DateTime?
+  revokedAt         DateTime?
+  transferCount     Int          @default(0)
+  dynamicTokenSeed  String?
+  publicTokenKey    String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  event             Event        @relation(fields: [eventId], references: [id])
+  order             Order        @relation(fields: [orderId], references: [id])
+  owner             User         @relation("TicketOwner", fields: [ownerId], references: [id])
+  transfers         Transfer[]
+  scanLogs          ScanLog[]
+
+  @@index([eventId])
+  @@index([orderId])
+  @@index([ownerId])
+  @@index([status])
+  @@map("tickets")
+}
+
+model Transfer {
+  id               String         @id @default(uuid())
+  ticketId         String
+  senderId         String
+  recipientId      String
+  status           TransferStatus @default(PENDING)
+  initiatedAt      DateTime       @default(now())
+  acceptedAt       DateTime?
+  canceledAt       DateTime?
+  expiresAt        DateTime
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  ticket           Ticket         @relation(fields: [ticketId], references: [id])
+  sender           User           @relation("TransferSender", fields: [senderId], references: [id])
+  recipient        User           @relation("TransferRecipient", fields: [recipientId], references: [id])
+
+  @@index([ticketId])
+  @@index([senderId])
+  @@index([recipientId])
+  @@index([status])
+  @@map("transfers")
+}
+
+model ScanLog {
+  id               String      @id @default(uuid())
+  ticketId         String
+  scannedByUserId  String?
+  gate             String?
+  deviceId         String?
+  scannedAt        DateTime    @default(now())
+  result           ScanResult
+  reason           String?
+  requestNonce     String?
+  tokenHash        String?
+
+  ticket           Ticket      @relation(fields: [ticketId], references: [id])
+  scannedBy        User?       @relation("ScannedByStaff", fields: [scannedByUserId], references: [id])
+
+  @@index([ticketId])
+  @@index([scannedByUserId])
+  @@index([scannedAt])
+  @@index([result])
+  @@map("scan_logs")
+}
