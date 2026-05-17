@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
-import { AuthController } from './auth.controller';
-import { AuthService } from './auth.service';
+import { PrismaModule } from '../prisma/prisma.module';
+import { RolesGuard } from './guards/roles.guard';
+import { SupabaseAuthGuard } from './guards/supabase-auth.guard';
 
 @Module({
-  controllers: [AuthController],
-  providers: [AuthService]
+  imports: [PrismaModule],
+  providers: [SupabaseAuthGuard, RolesGuard],
+  exports: [SupabaseAuthGuard, RolesGuard],
 })
 export class AuthModule {}
