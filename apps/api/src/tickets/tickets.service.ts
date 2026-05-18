@@ -7,10 +7,14 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { Prisma } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
 
 @Injectable()
 export class TicketsService {
-  constructor(private readonly prisma: PrismaService) {}
+ constructor(
+  private readonly prisma: PrismaService,
+  private readonly jwtService: JwtService,
+) {}
 
   private readonly TICKET_PRICE = new Prisma.Decimal('250.00');
   private readonly CURRENCY = 'MXN';
@@ -216,4 +220,50 @@ export class TicketsService {
       },
     };
   }
+
+  async getQrToken(userId: string, id: string) {
+  const ticket = await this.prisma.ticket.findFirst({
+    where: {
+      id,
+      ownerId: userId,
+    },
+    select: {
+      id: true,
+      ownerId: true,
+      eventId: true,
+      status: true,
+    },
+  });
+
+  if (!ticket) {
+    throw new NotFoundException('Boleto no encontrado');
+  }
+
+  if (ticket.status !== 'ACTIVE') {
+    throw new BadRequestException('Solo los boletos activos pueden generar QR');
+  }
+
+  const expiresInSeconds = 300;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  const token = await this.jwtService.signAsync(
+    {
+      sub: ticket.ownerId,
+      ticketId: ticket.id,
+      eventId: ticket.eventId,
+      type: 'ticket_access',
+      iat: nowSeconds,
+      exp: nowSeconds + expiresInSeconds,
+    },
+    {
+      secret: process.env.TICKET_QR_SECRET,
+    },
+  );
+
+  return {
+    token,
+    expiresAt: new Date((nowSeconds + expiresInSeconds) * 1000).toISOString(),
+  };
+}
+
 }

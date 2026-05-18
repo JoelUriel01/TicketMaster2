@@ -36,4 +36,10 @@ export class TicketsController {
   findOneMine(@Req() req, @Param('id') id: string) {
     return this.ticketsService.findOneMine(req.user.id, id);
   }
+
+  @Get(':id/qr-token')
+  @Roles(UserRole.BUYER)
+  getQrToken(@Req() req, @Param('id') id: string) {
+    return this.ticketsService.getQrToken(req.user.id, id);
+  }
 }

@@ -1,18 +1,54 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ValidateScanDto } from './dto/validate-scan.dto';
 import { ScanResult, TicketStatus } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
 
 @Injectable()
 export class ScansService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+  ) {}
 
   async validateScan(staffUserId: string, dto: ValidateScanDto) {
     const now = new Date();
 
+    // 1) Resolver ticketId desde qrToken o del propio dto
+    let ticketId = dto.ticketId;
+
+    if (dto.qrToken && !ticketId) {
+      try {
+        const payload = await this.jwtService.verifyAsync(dto.qrToken, {
+          secret: process.env.TICKET_QR_SECRET,
+        });
+
+        if (!payload?.ticketId || typeof payload.ticketId !== 'string') {
+          throw new BadRequestException('QR inválido: no contiene ticketId.');
+        }
+
+        ticketId = payload.ticketId;
+      } catch {
+        return {
+          ok: false,
+          result: ScanResult.INVALID,
+          message: 'QR inválido o expirado.',
+        };
+      }
+    }
+
+    if (!ticketId) {
+      return {
+        ok: false,
+        result: ScanResult.INVALID,
+        message: 'No se proporcionó identificador de boleto.',
+      };
+    }
+
+    // 2) Lógica original usando ticketId ya resuelto
     return this.prisma.$transaction(async (tx) => {
       const ticket = await tx.ticket.findUnique({
-        where: { id: dto.ticketId },
+        where: { id: ticketId },
         include: {
           event: {
             select: {
@@ -34,13 +70,13 @@ export class ScansService {
         },
       });
 
-if (!ticket) {
-  return {
-    ok: false,
-    result: ScanResult.INVALID,
-    message: 'Boleto no encontrado',
-  };
-}
+      if (!ticket) {
+        return {
+          ok: false,
+          result: ScanResult.INVALID,
+          message: 'Boleto no encontrado',
+        };
+      }
 
       if (ticket.revokedAt || ticket.status === TicketStatus.REVOKED) {
         await tx.scanLog.create({

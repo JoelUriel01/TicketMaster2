@@ -1,8 +1,22 @@
-import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  ValidateIf,
+} from 'class-validator';
 
 export class ValidateScanDto {
+  @ValidateIf((o) => !o.qrToken)
   @IsUUID()
-  ticketId: string;
+  @IsOptional()
+  ticketId?: string;
+
+  @ValidateIf((o) => !o.ticketId)
+  @IsString()
+  @MaxLength(2000)
+  @IsOptional()
+  qrToken?: string;
 
   @IsOptional()
   @IsString()

@@ -99,6 +99,77 @@ export default function TicketDetailPage() {
   const [notFound, setNF]     = useState(false);
   const [confetti, setConfetti] = useState(false);
 
+  const [qrToken, setQrToken] = useState('');
+  const [qrExpiresAt, setQrExpiresAt] = useState('');
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState('');
+
+    const color = ticket?.event ? colorFor(ticket.event.title) : '#00c2b3';
+  const abbr  = ticket?.event ? initials(ticket.event.title) : '';
+  const total = (ticket?.quantity ?? 0) * TICKET_PRICE;
+  const shortId = ticket?.id.slice(0, 8).toUpperCase() ?? '';
+  
+  const normalizedStatus = (ticket?.status ?? 'PENDING').toUpperCase();
+const isUsed = normalizedStatus === 'USED';
+const isBlocked = ['USED', 'REVOKED', 'EXPIRED'].includes(normalizedStatus);
+
+
+  async function loadQrToken(ticketId: string) {
+  try {
+    setQrLoading(true);
+    setQrError('');
+
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.access_token) {
+      setQrError('Tu sesión expiró. Inicia sesión nuevamente.');
+      return;
+    }
+
+    const res = await fetch(`http://localhost:3001/tickets/${ticketId}/qr-token`, {
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+
+    const data = await res.json().catch(() => null);
+
+    if (!res.ok || !data) {
+      throw new Error(data?.message || 'No se pudo generar el QR dinámico.');
+    }
+
+    setQrToken(data.token);
+    setQrExpiresAt(data.expiresAt);
+  } catch (e: any) {
+    setQrError(e.message ?? 'No se pudo generar el QR dinámico.');
+    setQrToken('');
+    setQrExpiresAt('');
+  } finally {
+    setQrLoading(false);
+  }
+}
+
+useEffect(() => {
+  if (!ticket?.id) return;
+  if (isBlocked) {
+    setQrToken('');
+    setQrExpiresAt('');
+    return;
+  }
+
+  let intervalId: NodeJS.Timeout;
+
+  loadQrToken(ticket.id);
+  intervalId = setInterval(() => {
+    loadQrToken(ticket.id);
+  }, 25000);
+
+  return () => clearInterval(intervalId);
+}, [ticket?.id, isBlocked]);
+
 useEffect(() => {
   async function loadTicket() {
     if (!id) return;
@@ -147,10 +218,6 @@ useEffect(() => {
     }
   }, [isNew, loading, ticket]);
 
-  const color = ticket?.event ? colorFor(ticket.event.title) : '#00c2b3';
-  const abbr  = ticket?.event ? initials(ticket.event.title) : '';
-  const total = (ticket?.quantity ?? 0) * TICKET_PRICE;
-  const shortId = ticket?.id.slice(0, 8).toUpperCase() ?? '';
 
   return (
     <>
@@ -238,16 +305,73 @@ useEffect(() => {
 
                   {/* QR placeholder / código */}
 <div className="ticket-qr-section">
-  <div className="qr-real">
-    <QRCode
-      value={JSON.stringify({ ticketId: ticket.id })}
-      size={140}
-      bgColor="transparent"
-      fgColor={color}
-    />
-  </div>
-  <p className="ticket-code">#{shortId}</p>
-  <p className="ticket-code-note">Escanéalo en el acceso</p>
+  {isBlocked ? (
+    <div className={`qr-blocked qr-${normalizedStatus.toLowerCase()}`}>
+      <div className="qr-blocked-icon">
+        {isUsed ? (
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <path d="M9 12l2 2 4-4" />
+            <circle cx="12" cy="12" r="9" />
+          </svg>
+        ) : (
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M8.5 8.5l7 7" />
+            <path d="M15.5 8.5l-7 7" />
+          </svg>
+        )}
+      </div>
+
+      <p className="ticket-code">#{shortId}</p>
+      <p className="qr-blocked-title">
+        {normalizedStatus === 'USED'
+          ? 'Este boleto ya fue utilizado'
+          : normalizedStatus === 'REVOKED'
+          ? 'Este boleto fue revocado'
+          : 'Este boleto expiró'}
+      </p>
+      <p className="ticket-code-note">
+        {normalizedStatus === 'USED'
+          ? 'El código QR dejó de mostrarse porque ya no puede volver a usarse.'
+          : 'Este boleto ya no es válido para ingreso.'}
+      </p>
+    </div>
+  ) : qrLoading && !qrToken ? (
+    <div className="qr-loading">
+      <div className="spinner small" />
+      <p className="ticket-code-note">Generando código seguro...</p>
+    </div>
+  ) : qrError ? (
+    <div className="qr-blocked qr-expired">
+      <div className="qr-blocked-icon">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8.5 8.5l7 7" />
+          <path d="M15.5 8.5l-7 7" />
+        </svg>
+      </div>
+      <p className="qr-blocked-title">No se pudo generar el QR</p>
+      <p className="ticket-code-note">{qrError}</p>
+    </div>
+  ) : (
+    <>
+      <div className="qr-real">
+        <QRCode
+          value={qrToken}
+          size={140}
+          bgColor="transparent"
+          fgColor={color}
+        />
+      </div>
+      <p className="ticket-code">#{shortId}</p>
+      <p className="ticket-code-note">Este código se actualiza automáticamente.</p>
+      {qrExpiresAt ? (
+        <p className="ticket-code-note subtle">
+          Válido hasta: {new Date(qrExpiresAt).toLocaleTimeString('es-MX')}
+        </p>
+      ) : null}
+    </>
+  )}
 </div>
                 </div>
               </div>
@@ -272,6 +396,71 @@ useEffect(() => {
 }
 
 const CSS = `
+
+.qr-loading{
+  min-height: 220px;
+  border-radius: 24px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  padding:24px 18px;
+}
+
+.spinner.small{
+  width: 26px;
+  height: 26px;
+  margin-bottom: 10px;
+}
+
+.ticket-code-note.subtle{
+  opacity: .72;
+  font-size: .84rem;
+}
+  .qr-blocked{
+  min-height: 220px;
+  border-radius: 24px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px 18px;
+}
+
+.qr-blocked-icon{
+  width: 72px;
+  height: 72px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 14px;
+}
+
+.qr-used .qr-blocked-icon{
+  color: #f5a623;
+  background: rgba(245,166,35,.12);
+  border: 1px solid rgba(245,166,35,.22);
+}
+
+.qr-revoked .qr-blocked-icon,
+.qr-expired .qr-blocked-icon{
+  color: #e05c5c;
+  background: rgba(224,92,92,.12);
+  border: 1px solid rgba(224,92,92,.22);
+}
+
+.qr-blocked-title{
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fff;
+}
   @import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap');
   :root{--bg:#0e0e0f;--surface:#141415;--surface-2:#1a1a1c;--surface-3:#212124;--border:oklch(1 0 0/0.08);--text:#e8e8e9;--text-muted:#8a8a8e;--text-faint:#4a4a50;--accent:#00c2b3;--radius-sm:6px;--radius-md:10px;--radius-lg:14px;--radius-xl:18px;--tr:180ms cubic-bezier(0.16,1,0.3,1);--font:'Satoshi','Inter',system-ui,sans-serif;}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -320,4 +509,6 @@ const CSS = `
   .loading-state{display:flex;justify-content:center;padding:4rem 0;}
   .error-state{text-align:center;padding:4rem 0;color:var(--text-muted);}
   .back-link{display:inline-flex;align-items:center;color:var(--accent);font-size:0.875rem;font-weight:500;text-decoration:none;margin-top:0.75rem;}
-`;
+`
+
+;
