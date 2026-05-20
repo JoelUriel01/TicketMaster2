@@ -54,6 +54,15 @@ export class EventsService {
         organizer: {
           select: { id: true, fullName: true, email: true },
         },
+        ticketTypes: {
+          select: {
+            id: true,
+            name: true,
+            price: true,
+            currency: true,
+            // capacity, etc. si lo necesitas
+          },
+        },
       },
     });
 
@@ -133,6 +142,21 @@ async unpublish(id: string, requesterId: string) {
     where: { id },
     data: {
       isPublished: false,
+    },
+  });
+}
+
+async findTicketTypes(eventId: string) {
+  return this.prisma.ticketType.findMany({
+    where: { eventId },
+    orderBy: { price: 'asc' },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      price: true,
+      currency: true,
+      capacity: true,
     },
   });
 }

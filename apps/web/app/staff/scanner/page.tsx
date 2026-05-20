@@ -1,11 +1,14 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Scanner } from '@yudiel/react-qr-scanner';
 import { createClient } from '@/lib/supabase/client';
+import { API_BASE_URL } from '@/lib/supabase/api';
 
+
+/* ─────────────────────────── Types ─────────────────────────── */
 type Role = 'BUYER' | 'ORGANIZER' | 'STAFF' | 'ADMIN';
 
 type MeResponse = {
@@ -52,65 +55,84 @@ type ScanResponse = {
   };
 };
 
-function getResultTone(result?: ScanApiResult) {
+/* ─────────────────────────── Helpers ─────────────────────────── */
+type Tone = { bg: string; border: string; text: string; label: string; icon: 'check' | 'warn' | 'x' | 'idle' };
+
+function getResultTone(result?: ScanApiResult): Tone {
   switch (result) {
     case 'VALID':
-      return {
-        bg: 'rgba(34,197,94,.12)',
-        border: 'rgba(34,197,94,.30)',
-        text: '#86efac',
-        title: 'Acceso permitido',
-      };
+      return { bg: 'rgba(34,197,94,.10)', border: 'rgba(34,197,94,.28)', text: '#86efac', label: 'Acceso permitido', icon: 'check' };
     case 'ALREADY_USED':
-      return {
-        bg: 'rgba(251,191,36,.10)',
-        border: 'rgba(251,191,36,.28)',
-        text: '#fcd34d',
-        title: 'Boleto ya usado',
-      };
+      return { bg: 'rgba(251,191,36,.08)', border: 'rgba(251,191,36,.26)', text: '#fcd34d', label: 'Boleto ya usado', icon: 'warn' };
     case 'REVOKED':
     case 'INVALID':
     case 'EXPIRED':
     case 'REPLAY_DETECTED':
-      return {
-        bg: 'rgba(239,68,68,.10)',
-        border: 'rgba(239,68,68,.28)',
-        text: '#fca5a5',
-        title: 'Acceso rechazado',
-      };
+      return { bg: 'rgba(239,68,68,.09)', border: 'rgba(239,68,68,.26)', text: '#fca5a5', label: 'Acceso rechazado', icon: 'x' };
     default:
-      return {
-        bg: 'rgba(255,255,255,.03)',
-        border: 'rgba(255,255,255,.08)',
-        text: '#e5e7eb',
-        title: 'Esperando escaneo',
-      };
+      return { bg: 'rgba(255,255,255,.025)', border: 'rgba(255,255,255,.07)', text: '#9a9ab0', label: 'En espera', icon: 'idle' };
   }
 }
 
-function extractTicketId(raw: string): string | null {
+function extractQrPayload(raw: string): { qrToken?: string; ticketId?: string } | null {
   if (!raw) return null;
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed?.ticketId && typeof parsed.ticketId === 'string') {
-      return parsed.ticketId;
-    }
-  } catch {}
-
   const trimmed = raw.trim();
-
+  if (trimmed.split('.').length === 3) return { qrToken: trimmed };
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed?.ticketId && typeof parsed.ticketId === 'string') return { ticketId: parsed.ticketId };
+  } catch {}
   const matchJsonLike = trimmed.match(/"ticketId"\s*:\s*"([^"]+)"/);
-  if (matchJsonLike?.[1]) return matchJsonLike[1];
-
-  const uuidRegex =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-  if (uuidRegex.test(trimmed)) return trimmed;
-
+  if (matchJsonLike?.[1]) return { ticketId: matchJsonLike[1] };
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (uuidRegex.test(trimmed)) return { ticketId: trimmed };
   return null;
 }
 
+function fmtDateTime(iso: string) {
+  return new Date(iso).toLocaleString('es-MX', {
+    weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+/* ─────────────────────────── Result icon ─────────────────────── */
+function ResultIcon({ icon, color }: { icon: Tone['icon']; color: string }) {
+  if (icon === 'check') return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+  if (icon === 'warn') return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+  );
+  if (icon === 'x') return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  );
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V9z"/>
+    </svg>
+  );
+}
+
+/* ─────────────────────────── InfoRow ─────────────────────────── */
+function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="info-row">
+      <span>{label}</span>
+      <strong style={mono ? { fontFamily: "'JetBrains Mono', 'Fira Code', monospace", fontSize: '13px' } : undefined}>
+        {value}
+      </strong>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Main page ─────────────────────────── */
 export default function StaffScannerPage() {
   const router = useRouter();
 
@@ -125,42 +147,56 @@ export default function StaffScannerPage() {
   const [lastRaw, setLastRaw] = useState('');
   const [response, setResponse] = useState<ScanResponse | null>(null);
   const [cameraPaused, setCameraPaused] = useState(false);
+  const [scanCount, setScanCount] = useState(0);
 
   const tone = useMemo(() => getResultTone(response?.result), [response]);
+  const resultCardRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
 
+  /* ── Boot animation ── */
+  useEffect(() => {
+    if (bootLoading) return;
+    import('gsap').then(({ gsap }) => {
+      if (layoutRef.current) {
+        gsap.fromTo(
+          layoutRef.current.querySelectorAll('.anim'),
+          { opacity: 0, y: 24 },
+          { opacity: 1, y: 0, stagger: 0.08, duration: 0.6, ease: 'power3.out' }
+        );
+      }
+    });
+  }, [bootLoading]);
+
+  /* ── Result animation ── */
+  useEffect(() => {
+    if (!response || !resultCardRef.current) return;
+    import('gsap').then(({ gsap }) => {
+      gsap.fromTo(
+        resultCardRef.current,
+        { scale: 0.96, opacity: 0.4 },
+        { scale: 1, opacity: 1, duration: 0.4, ease: 'back.out(1.4)' }
+      );
+    });
+  }, [response]);
+
+  /* ── Auth guard ── */
   useEffect(() => {
     async function guardPage() {
       try {
         const supabase = createClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-
-        if (!session?.access_token) {
-          router.replace('/login');
-          return;
-        }
-
-        const res = await fetch('http://localhost:3001/auth/me', {
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) { router.replace('/login'); return; }
+        const res = await fetch(`${API_BASE_URL}/auth/me`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
         });
-
-        if (!res.ok) {
-          router.replace('/login');
-          return;
-        }
-
+        if (!res.ok) { router.replace('/login'); return; }
         const data = (await res.json()) as MeResponse;
-        const allowedRoles: Role[] = ['STAFF', 'ORGANIZER', 'ADMIN'];
-
-        if (!allowedRoles.includes(data.role)) {
+        const allowed: Role[] = ['STAFF', 'ORGANIZER', 'ADMIN'];
+        if (!allowed.includes(data.role)) {
           setAuthError('No tienes permisos para acceder al scanner.');
           setTimeout(() => router.replace('/dashboard'), 1200);
           return;
         }
-
         setMe(data);
       } catch {
         setAuthError('No se pudo validar tu acceso.');
@@ -169,524 +205,621 @@ export default function StaffScannerPage() {
         setBootLoading(false);
       }
     }
-
     guardPage();
   }, [router]);
 
-async function submitValidation(qrToken: string, raw?: string) {
-  if (!qrToken || loading) return;
-
-  setLoading(true);
-  setLastRaw(raw ?? qrToken);
-
-  try {
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-
-    if (!session?.access_token) {
-      setResponse({
-        ok: false,
-        result: 'INVALID',
-        message: 'Tu sesión expiró. Inicia sesión de nuevo.',
+  /* ── Validation ── */
+  async function submitValidation(qrToken: string, raw?: string) {
+    if (!qrToken || loading) return;
+    setLoading(true);
+    setLastRaw(raw ?? qrToken);
+    try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setResponse({ ok: false, result: 'INVALID', message: 'Tu sesión expiró. Inicia sesión de nuevo.' });
+        return;
+      }
+      const requestNonce =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const res = await fetch(`${API_BASE_URL}/scans/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ qrToken, gate, deviceId, requestNonce }),
       });
+      const data = (await res.json().catch(() => null)) as ScanResponse | null;
+      if (!res.ok || !data) {
+        setResponse({ ok: false, result: 'INVALID', message: data?.message || 'No se pudo validar el boleto.' });
+        return;
+      }
+      setResponse(data);
+      setScanCount((c) => c + 1);
+      setCameraPaused(true);
+    } catch {
+      setResponse({ ok: false, result: 'INVALID', message: 'Ocurrió un error al validar el boleto.' });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleManualSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const payload = extractQrPayload(manualCode);
+    if (!payload) {
+      setResponse({ ok: false, result: 'INVALID', message: 'No se pudo interpretar el contenido ingresado.' });
       return;
     }
-
-    const requestNonce =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-    const res = await fetch('http://localhost:3001/scans/validate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({
-        qrToken,
-        gate,
-        deviceId,
-        requestNonce,
-      }),
-    });
-
-    const data = (await res.json().catch(() => null)) as ScanResponse | null;
-
-    if (!res.ok || !data) {
-      setResponse({
-        ok: false,
-        result: 'INVALID',
-        message: data?.message || 'No se pudo validar el boleto.',
-      });
-      return;
-    }
-
-    setResponse(data);
-    setCameraPaused(true);
-  } catch {
-    setResponse({
-      ok: false,
-      result: 'INVALID',
-      message: 'Ocurrió un error al validar el boleto.',
-    });
-  } finally {
-    setLoading(false);
-  }
-}
-
-function extractQrPayload(raw: string): { qrToken?: string; ticketId?: string } | null {
-  if (!raw) return null;
-
-  const trimmed = raw.trim();
-
-  if (trimmed.split('.').length === 3) {
-    return { qrToken: trimmed };
+    if (payload.qrToken) { submitValidation(payload.qrToken, manualCode); return; }
+    if (payload.ticketId) { submitValidation(payload.ticketId, manualCode); return; }
+    setResponse({ ok: false, result: 'INVALID', message: 'Contenido inválido.' });
   }
 
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed?.ticketId && typeof parsed.ticketId === 'string') {
-      return { ticketId: parsed.ticketId };
-    }
-  } catch {}
-
-  const matchJsonLike = trimmed.match(/"ticketId"\s*:\s*"([^"]+)"/);
-  if (matchJsonLike?.[1]) {
-    return { ticketId: matchJsonLike[1] };
+  function resetScan() {
+    setResponse(null);
+    setLastRaw('');
+    setManualCode('');
+    setCameraPaused(false);
   }
 
-  const uuidRegex =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-  if (uuidRegex.test(trimmed)) {
-    return { ticketId: trimmed };
-  }
-
-  return null;
-}
-
-async function handleManualSubmit(e: React.FormEvent) {
-  e.preventDefault();
-
-  const payload = extractQrPayload(manualCode);
-
-  if (!payload) {
-    setResponse({
-      ok: false,
-      result: 'INVALID',
-      message: 'No se pudo interpretar el contenido ingresado.',
-    });
-    return;
-  }
-
-  if (payload.qrToken) {
-    await submitValidation(payload.qrToken, manualCode);
-    return;
-  }
-
-  if (payload.ticketId) {
-    await submitValidation(payload.ticketId, manualCode);
-    return;
-  }
-
-  setResponse({
-    ok: false,
-    result: 'INVALID',
-    message: 'Contenido inválido.',
-  });
-}
-
-  if (bootLoading) {
-    return (
-      <>
-        <style>{CSS}</style>
-        <div className="guard-screen">
-          <div className="guard-card">
-            <div className="spinner" />
-            <p>Validando permisos...</p>
-          </div>
+  /* ── Guard screens ── */
+  if (bootLoading) return (
+    <>
+      <style>{CSS}</style>
+      <div className="guard-screen">
+        <div className="guard-card">
+          <div className="spinner" />
+          <p>Validando permisos…</p>
         </div>
-      </>
-    );
-  }
+      </div>
+    </>
+  );
 
-  if (authError && !me) {
-    return (
-      <>
-        <style>{CSS}</style>
-        <div className="guard-screen">
-          <div className="guard-card">
-            <h2>Acceso restringido</h2>
-            <p>{authError}</p>
+  if (authError && !me) return (
+    <>
+      <style>{CSS}</style>
+      <div className="guard-screen">
+        <div className="guard-card">
+          <div className="guard-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2.2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
           </div>
+          <h2>Acceso restringido</h2>
+          <p>{authError}</p>
         </div>
-      </>
-    );
-  }
+      </div>
+    </>
+  );
 
+  /* ── Main UI ── */
   return (
     <>
       <style>{CSS}</style>
-
       <div className="scanner-page">
-        <nav className="topbar">
-          <div className="topbar-inner">
-            <Link href="/dashboard" className="back-link">
+
+        {/* Nav */}
+        <nav className="top-nav">
+          <div className="nav-inner">
+            <Link href="/dashboard" className="back-btn">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <polyline points="15 18 9 12 15 6" />
               </svg>
               Dashboard
             </Link>
-
-            <div className="topbar-title">
-              Scanner staff · {me?.role}
+            <div className="nav-badge">
+              <span className="dot" />
+              {me?.role ?? 'STAFF'}
             </div>
           </div>
         </nav>
 
-        <main className="scanner-layout">
-          <section className="scanner-panel">
-            <div className="panel-head">
-              <div>
-                <h1>Check-in de boletos</h1>
-                <p>Escanea un QR o pega el contenido manualmente para validar acceso.</p>
-              </div>
+        <div ref={layoutRef} className="page-layout">
 
-              <button
-                type="button"
-                className="ghost-btn"
-                onClick={() => setCameraPaused((v) => !v)}
-              >
-                {cameraPaused ? 'Reanudar cámara' : 'Pausar cámara'}
+          {/* Page header */}
+          <header className="page-header anim">
+            <div>
+              <h1 className="page-title">Check-in</h1>
+              <p className="page-subtitle">
+                {me?.fullName ? `Hola, ${me.fullName.split(' ')[0]}. ` : ''}
+                Escanea un QR o valida manualmente.
+              </p>
+            </div>
+            <div className="header-right">
+              <div className="stat-chip anim">
+                <span className="stat-num">{scanCount}</span>
+                <span className="stat-label">escaneados</span>
+              </div>
+              <button type="button" className="ghost-btn anim" onClick={() => setCameraPaused((v) => !v)}>
+                {cameraPaused
+                  ? <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polygon points="5 3 19 12 5 21 5 3"/></svg>Reanudar</>
+                  : <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>Pausar</>
+                }
               </button>
             </div>
+          </header>
 
-            <div className="scanner-grid">
-              <div className="camera-card">
-                <div className="camera-header">
-                  <span className="camera-title">Cámara</span>
-                  <span className={`camera-status ${cameraPaused ? 'paused' : 'live'}`}>
-                    {cameraPaused ? 'Pausada' : 'Activa'}
+          {/* Main grid */}
+          <div className="main-grid">
+
+            {/* Left col */}
+            <div className="left-col">
+
+              {/* Camera */}
+              <div className="card camera-card anim">
+                <div className="card-header">
+                  <span className="card-label">Cámara</span>
+                  <span className={`status-pill ${cameraPaused ? 'status-paused' : 'status-live'}`}>
+                    {cameraPaused ? 'Pausada' : '● Activa'}
                   </span>
                 </div>
-
-                <div className="camera-box">
+                <div className="camera-viewport">
                   {cameraPaused ? (
-                    <div className="camera-placeholder">
-                      <p>La cámara está en pausa.</p>
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        onClick={() => setCameraPaused(false)}
-                      >
+                    <div className="camera-idle">
+                      <div className="idle-icon">
+                        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+                          <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+                        </svg>
+                      </div>
+                      <p>Cámara en pausa</p>
+                      <button type="button" className="primary-btn" onClick={() => setCameraPaused(false)}>
                         Reanudar escaneo
                       </button>
                     </div>
                   ) : (
                     <Scanner
                       constraints={{ facingMode: 'environment' }}
-                       onScan={(detectedCodes) => {
+                      onScan={(detectedCodes) => {
                         const raw = detectedCodes?.[0]?.rawValue;
                         if (!raw || loading) return;
-
                         const payload = extractQrPayload(raw);
-
                         if (!payload) {
-                            setResponse({
-                            ok: false,
-                            result: 'INVALID',
-                            message: 'El QR no contiene un payload válido.',
-                            });
-                            setLastRaw(raw);
-                            setCameraPaused(true);
-                            return;
+                          setResponse({ ok: false, result: 'INVALID', message: 'El QR no contiene un payload válido.' });
+                          setLastRaw(raw); setCameraPaused(true); return;
                         }
-
-                        if (payload.qrToken) {
-                            submitValidation(payload.qrToken, raw);
-                            return;
-                        }
-
-                        if (payload.ticketId) {
-                            submitValidation(payload.ticketId, raw);
-                            return;
-                        }
-
-                        setResponse({
-                            ok: false,
-                            result: 'INVALID',
-                            message: 'No se pudo interpretar el QR.',
-                        });
-                        setLastRaw(raw);
-                        setCameraPaused(true);
-                        }}
-                      onError={() => {
-                        setResponse({
-                          ok: false,
-                          result: 'INVALID',
-                          message: 'No se pudo acceder a la cámara o leer el QR.',
-                        });
+                        if (payload.qrToken) { submitValidation(payload.qrToken, raw); return; }
+                        if (payload.ticketId) { submitValidation(payload.ticketId, raw); return; }
+                        setResponse({ ok: false, result: 'INVALID', message: 'No se pudo interpretar el QR.' });
+                        setLastRaw(raw); setCameraPaused(true);
                       }}
+                      onError={() => setResponse({ ok: false, result: 'INVALID', message: 'No se pudo acceder a la cámara.' })}
                     />
                   )}
-                </div>
-
-                <p className="helper-text">
-                  Usa preferentemente la cámara trasera del teléfono o una webcam enfocada al QR.
-                </p>
-              </div>
-
-              <div className="side-panel">
-                <div className="config-card">
-                  <h2>Configuración</h2>
-
-                  <label className="field">
-                    <span>Gate</span>
-                    <input value={gate} onChange={(e) => setGate(e.target.value)} placeholder="Ej. Acceso A" />
-                  </label>
-
-                  <label className="field">
-                    <span>Device ID</span>
-                    <input
-                      value={deviceId}
-                      onChange={(e) => setDeviceId(e.target.value)}
-                      placeholder="scanner-web-01"
-                    />
-                  </label>
-                </div>
-
-                <form className="manual-card" onSubmit={handleManualSubmit}>
-                  <h2>Validación manual</h2>
-                    <p>Pega el token del QR, el JSON legado o el UUID del boleto.</p>
-                  <textarea
-                    value={manualCode}
-                    onChange={(e) => setManualCode(e.target.value)}
-                    placeholder='{"ticketId":"f0d3d97f-a67d-4dce-a3b2-6a45e08a2904"}'
-                  />
-
-                  <button type="submit" className="primary-btn" disabled={loading}>
-                    {loading ? 'Validando...' : 'Validar boleto'}
-                  </button>
-                </form>
-              </div>
-            </div>
-          </section>
-
-          <aside className="result-panel">
-            <div
-              className="result-card"
-              style={{
-                background: tone.bg,
-                borderColor: tone.border,
-              }}
-            >
-              <div className="result-kicker" style={{ color: tone.text }}>
-                {tone.title}
-              </div>
-
-              <h2>{response?.message ?? 'Esperando el próximo escaneo'}</h2>
-
-              <p className="result-subtext">
-                {response?.result
-                  ? `Resultado: ${response.result}`
-                  : 'Cuando se valide un boleto, el resultado aparecerá aquí.'}
-              </p>
-
-              {lastRaw ? (
-                <div className="raw-box">
-                  <span>Último contenido leído</span>
-                  <code>{lastRaw}</code>
-                </div>
-              ) : null}
-
-              {response?.ticket ? (
-                <div className="ticket-info">
-                  <div className="info-row">
-                    <span>Boleto</span>
-                    <strong>#{response.ticket.id.slice(0, 8).toUpperCase()}</strong>
-                  </div>
-
-                  <div className="info-row">
-                    <span>Estado</span>
-                    <strong>{response.ticket.status}</strong>
-                  </div>
-
-                  <div className="info-row">
-                    <span>Titular</span>
-                    <strong>{response.ticket.owner?.fullName ?? '—'}</strong>
-                  </div>
-
-                  <div className="info-row">
-                    <span>Email</span>
-                    <strong>{response.ticket.owner?.email ?? '—'}</strong>
-                  </div>
-
-                  <div className="info-row">
-                    <span>Evento</span>
-                    <strong>{response.ticket.event?.title ?? '—'}</strong>
-                  </div>
-
-                  <div className="info-row">
-                    <span>Recinto</span>
-                    <strong>{response.ticket.event?.venueName ?? '—'}</strong>
-                  </div>
-
-                  <div className="info-row">
-                    <span>Ciudad</span>
-                    <strong>{response.ticket.event?.venueCity ?? '—'}</strong>
-                  </div>
-
-                  {response.ticket.usedAt ? (
-                    <div className="info-row">
-                      <span>Usado en</span>
-                      <strong>
-                        {new Date(response.ticket.usedAt).toLocaleString('es-MX')}
-                      </strong>
+                  {loading && (
+                    <div className="scan-overlay">
+                      <div className="spinner" />
                     </div>
-                  ) : null}
+                  )}
                 </div>
-              ) : null}
+                <p className="camera-hint">Usa preferentemente la cámara trasera o una webcam enfocada al QR.</p>
+              </div>
+
+              {/* Config + Manual */}
+              <div className="bottom-row">
+                <div className="card config-card anim">
+                  <div className="card-header">
+                    <span className="card-label">Configuración</span>
+                  </div>
+                  <div className="fields">
+                    <label className="field">
+                      <span>Gate</span>
+                      <input value={gate} onChange={(e) => setGate(e.target.value)} placeholder="Ej. Acceso A" />
+                    </label>
+                    <label className="field">
+                      <span>Device ID</span>
+                      <input value={deviceId} onChange={(e) => setDeviceId(e.target.value)} placeholder="scanner-web-01" />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="card manual-card anim">
+                  <div className="card-header">
+                    <span className="card-label">Validación manual</span>
+                  </div>
+                  <p className="manual-hint">Pega el token JWT, JSON o UUID del boleto.</p>
+                  <form onSubmit={handleManualSubmit}>
+                    <textarea
+                      value={manualCode}
+                      onChange={(e) => setManualCode(e.target.value)}
+                      placeholder='{"ticketId":"f0d3d97f-…"}'
+                    />
+                    <button type="submit" className="primary-btn full-width" disabled={loading}>
+                      {loading ? 'Validando…' : 'Validar boleto'}
+                    </button>
+                  </form>
+                </div>
+              </div>
             </div>
-          </aside>
-        </main>
+
+            {/* Right col — Result */}
+            <aside className="right-col">
+              <div
+                ref={resultCardRef}
+                className="result-card anim"
+                style={{ borderColor: tone.border, background: `linear-gradient(160deg, ${tone.bg} 0%, rgba(10,10,15,0) 55%)` }}
+              >
+                <div className="result-status" style={{ borderBottomColor: tone.border }}>
+                  <div className="result-icon-wrap" style={{ background: tone.bg, border: `1px solid ${tone.border}` }}>
+                    <ResultIcon icon={tone.icon} color={tone.text} />
+                  </div>
+                  <div>
+                    <p className="result-label" style={{ color: tone.text }}>{tone.label}</p>
+                    <p className="result-message">{response?.message ?? 'Esperando el próximo escaneo'}</p>
+                  </div>
+                </div>
+
+                {response?.ticket ? (
+                  <div className="result-body">
+                    <p className="section-title">Boleto</p>
+                    <div className="info-grid">
+                      <InfoRow label="Código" value={`#${response.ticket.id.slice(0, 8).toUpperCase()}`} mono />
+                      <InfoRow label="Estado" value={response.ticket.status} />
+                      {response.ticket.usedAt && <InfoRow label="Usado en" value={fmtDateTime(response.ticket.usedAt)} />}
+                    </div>
+
+                    {response.ticket.owner && (
+                      <>
+                        <p className="section-title">Titular</p>
+                        <div className="owner-card">
+                          <div className="owner-avatar">
+                            {response.ticket.owner.fullName.split(' ').slice(0, 2).map((w) => w[0]).join('').toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="owner-name">{response.ticket.owner.fullName}</p>
+                            <p className="owner-email">{response.ticket.owner.email}</p>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {response.ticket.event && (
+                      <>
+                        <p className="section-title">Evento</p>
+                        <div className="info-grid">
+                          <InfoRow label="Nombre" value={response.ticket.event.title} />
+                          <InfoRow label="Recinto" value={response.ticket.event.venueName} />
+                          <InfoRow label="Ciudad" value={response.ticket.event.venueCity} />
+                          <InfoRow label="Inicio" value={fmtDateTime(response.ticket.event.startsAt)} />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : response ? (
+                  <div className="result-body">
+                    {lastRaw && (
+                      <div className="raw-box">
+                        <span>Contenido leído</span>
+                        <code>{lastRaw}</code>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="result-idle">
+                    <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.10)" strokeWidth="1.3">
+                      <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V9z"/>
+                      <path d="M13 5v2M13 17v2M13 11v2"/>
+                    </svg>
+                    <p>El resultado aparecerá aquí al escanear un boleto.</p>
+                  </div>
+                )}
+
+                {response && (
+                  <div className="result-footer">
+                    <button type="button" className="next-scan-btn" onClick={resetScan}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                        <path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 .49-3.82"/>
+                      </svg>
+                      Escanear siguiente
+                    </button>
+                  </div>
+                )}
+              </div>
+            </aside>
+
+          </div>
+        </div>
       </div>
     </>
   );
 }
 
 const CSS = `
-:root{
-  --bg:#050507;
-  --panel:#101014;
-  --panel-2:#15151b;
-  --soft:#191922;
-  --border:#262631;
-  --text:#f5f7fb;
-  --muted:#9da3af;
-  --purple:#7c3aed;
-  --purple-2:#9333ea;
+:root {
+  --bg: #050507;
+  --panel: #0e0e12;
+  --border: #1e1e28;
+  --border-subtle: rgba(255,255,255,.05);
+  --text: #f0f0f2;
+  --muted: #8888a0;
+  --soft: #5a5a6a;
+  --accent: #7c3aed;
+  --accent-2: #9333ea;
 }
-*{box-sizing:border-box}
-html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,sans-serif}
-a{text-decoration:none;color:inherit}
-button,input,textarea{font:inherit}
-.guard-screen{
-  min-height:100vh;
-  display:grid;
-  place-items:center;
-  background:
-    radial-gradient(circle at top, rgba(124,58,237,.14), transparent 30%),
-    linear-gradient(180deg, #050507 0%, #09090d 100%);
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
-.guard-card{
-  width:min(92vw,420px);
-  padding:28px;
-  border-radius:24px;
-  text-align:center;
-  background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
-  border:1px solid rgba(255,255,255,.08);
+a { text-decoration: none; color: inherit; }
+button, input, textarea { font: inherit; }
+
+.guard-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(124,58,237,.13), transparent), #050507;
 }
-.guard-card h2{margin:0 0 10px;font-size:28px}
-.guard-card p{margin:0;color:var(--muted)}
-.spinner{
-  width:42px;height:42px;margin:0 auto 16px;border-radius:999px;
-  border:3px solid rgba(255,255,255,.08);border-top-color:var(--purple);
-  animation:spin .8s linear infinite;
+.guard-card {
+  width: min(92vw, 400px);
+  padding: 32px;
+  border-radius: 24px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
 }
-@keyframes spin{to{transform:rotate(360deg)}}
-.scanner-page{
-  min-height:100vh;
-  background:
-    radial-gradient(circle at top, rgba(124,58,237,.14), transparent 30%),
-    linear-gradient(180deg, #050507 0%, #09090d 100%);
+.guard-card h2 { font-size: 26px; letter-spacing: -.03em; }
+.guard-card p { color: var(--muted); font-size: 15px; }
+.guard-icon {
+  width: 52px; height: 52px; border-radius: 16px;
+  display: grid; place-items: center;
+  border: 1px solid rgba(239,68,68,.2);
+  background: rgba(239,68,68,.08);
+  margin-bottom: 4px;
 }
-.topbar{
-  position:sticky;top:0;z-index:20;border-bottom:1px solid rgba(255,255,255,.05);
-  backdrop-filter:blur(18px);background:rgba(5,5,7,.72);
+.spinner {
+  width: 38px; height: 38px; border-radius: 999px;
+  border: 3px solid rgba(255,255,255,.06);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
 }
-.topbar-inner{
-  max-width:1280px;margin:0 auto;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.scanner-page {
+  min-height: 100vh;
+  background: radial-gradient(ellipse 80% 35% at 50% -5%, rgba(124,58,237,.11), transparent), #050507;
 }
-.back-link{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
-.back-link:hover{color:#fff}
-.topbar-title{font-size:14px;color:#d4d4d8;font-weight:700}
-.scanner-layout{
-  max-width:1280px;margin:0 auto;padding:28px 20px 64px;display:grid;
-  grid-template-columns:minmax(0,1.35fr) minmax(320px,.8fr);gap:24px;
+.top-nav {
+  position: sticky; top: 0; z-index: 20;
+  backdrop-filter: blur(20px);
+  background: rgba(5,5,7,.75);
+  border-bottom: 1px solid var(--border-subtle);
 }
-.scanner-panel,.result-panel{min-width:0}
-.panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px}
-.panel-head h1{margin:0;font-size:40px;line-height:1;letter-spacing:-.04em}
-.panel-head p{margin:10px 0 0;color:var(--muted);font-size:15px}
-.ghost-btn,.primary-btn{
-  min-height:44px;border-radius:14px;padding:0 16px;border:1px solid rgba(255,255,255,.08);cursor:pointer;transition:.2s ease;
+.nav-inner {
+  max-width: 1200px; margin: 0 auto;
+  padding: 16px 24px;
+  display: flex; align-items: center; justify-content: space-between;
 }
-.ghost-btn{background:rgba(255,255,255,.03);color:#fff}
-.ghost-btn:hover{background:rgba(255,255,255,.06)}
-.primary-btn{background:linear-gradient(135deg, var(--purple), var(--purple-2));color:#fff;border:none;font-weight:700}
-.primary-btn:hover{filter:brightness(1.06)}
-.primary-btn:disabled{opacity:.65;cursor:not-allowed}
-.scanner-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px}
-.camera-card,.config-card,.manual-card,.result-card{
-  background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
-  border:1px solid var(--border);border-radius:24px;box-shadow:0 16px 42px rgba(0,0,0,.28);
+.back-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  color: var(--muted); font-size: 14px; transition: color .2s;
 }
-.camera-card{padding:16px}
-.config-card,.manual-card,.result-card{padding:18px}
-.camera-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.camera-title{font-size:14px;font-weight:700}
-.camera-status{
-  font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;border-radius:999px;padding:8px 10px;border:1px solid rgba(255,255,255,.08);
+.back-btn:hover { color: var(--text); }
+.nav-badge {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: #c4c4d0;
 }
-.camera-status.live{color:#86efac;background:rgba(34,197,94,.10)}
-.camera-status.paused{color:#fcd34d;background:rgba(251,191,36,.10)}
-.camera-box{
-  overflow:hidden;border-radius:20px;background:#0b0b10;border:1px solid rgba(255,255,255,.05);
-  min-height:420px;display:flex;align-items:center;justify-content:center;
+.dot {
+  width: 7px; height: 7px; border-radius: 999px;
+  background: #22c55e; box-shadow: 0 0 6px #22c55e;
+  animation: pulse 2s ease-in-out infinite;
 }
-.camera-box video{width:100%;height:100%;object-fit:cover}
-.camera-placeholder{
-  min-height:420px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--muted);
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+.page-layout { max-width: 1200px; margin: 0 auto; padding: 36px 24px 80px; }
+
+.page-header {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; margin-bottom: 32px; opacity: 0;
 }
-.helper-text{margin:12px 4px 0;font-size:13px;color:var(--muted)}
-.side-panel{display:grid;gap:20px}
-.config-card h2,.manual-card h2,.result-card h2{margin:0;font-size:20px;letter-spacing:-.03em}
-.manual-card p{margin:8px 0 0;color:var(--muted);font-size:14px}
-.field{display:grid;gap:8px;margin-top:14px}
-.field span,.raw-box span{
-  font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#a1a1aa;font-weight:700;
+.page-title { font-size: 44px; font-weight: 800; letter-spacing: -.05em; line-height: 1; }
+.page-subtitle { margin-top: 8px; color: var(--muted); font-size: 15px; }
+.header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(300px, .7fr);
+  gap: 20px;
+  align-items: start;
 }
-.field input,.manual-card textarea{
-  width:100%;border:none;outline:none;border-radius:14px;background:#0d0d12;color:#fff;border:1px solid rgba(255,255,255,.07);padding:14px 15px;
+.left-col { display: flex; flex-direction: column; gap: 16px; }
+
+.card {
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  overflow: hidden;
+  opacity: 0;
 }
-.manual-card textarea{min-height:140px;resize:vertical;margin:14px 0 16px}
-.result-card{position:sticky;top:92px}
-.result-kicker{font-size:12px;text-transform:uppercase;letter-spacing:.1em;font-weight:800;margin-bottom:10px}
-.result-subtext{color:var(--muted);font-size:14px;margin:8px 0 0}
-.raw-box{
-  margin-top:18px;padding:14px;border-radius:16px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.06);
+.card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--border-subtle);
 }
-.raw-box code{
-  display:block;margin-top:10px;white-space:pre-wrap;word-break:break-word;color:#e9d5ff;font-size:13px;
+.card-label {
+  font-size: 12px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .07em;
 }
-.ticket-info{margin-top:18px;display:grid;gap:12px}
-.info-row{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;font-size:14px}
-.info-row span{color:var(--muted)}
-.info-row strong{text-align:right;color:#fff}
-@media (max-width:1080px){
-  .scanner-layout{grid-template-columns:1fr}
-  .result-card{position:relative;top:auto}
+
+.camera-viewport {
+  position: relative; background: #080810;
+  min-height: 380px; display: flex; align-items: center; justify-content: center;
 }
-@media (max-width:860px){
-  .scanner-grid{grid-template-columns:1fr}
+.camera-viewport > div { width: 100%; }
+.camera-idle {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 14px;
+  min-height: 380px; color: var(--muted); text-align: center;
 }
-@media (max-width:640px){
-  .topbar-inner,.scanner-layout{padding-left:16px;padding-right:16px}
-  .panel-head{flex-direction:column;align-items:stretch}
-  .panel-head h1{font-size:32px}
-  .camera-box,.camera-placeholder{min-height:320px}
+.idle-icon {
+  width: 60px; height: 60px; border-radius: 18px;
+  display: grid; place-items: center;
+  background: rgba(255,255,255,.04); border: 1px solid var(--border);
+  color: var(--soft); margin-bottom: 4px;
+}
+.scan-overlay {
+  position: absolute; inset: 0;
+  background: rgba(5,5,7,.7);
+  display: grid; place-items: center;
+  backdrop-filter: blur(4px);
+}
+.camera-hint {
+  padding: 12px 20px; font-size: 12px; color: var(--soft);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.status-pill {
+  display: inline-flex; align-items: center; padding: 4px 12px;
+  border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+}
+.status-live  { color: #86efac; background: rgba(34,197,94,.1);  border: 1px solid rgba(34,197,94,.2); }
+.status-paused { color: #fcd34d; background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.2); }
+
+.bottom-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+.fields { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 7px; }
+.field span {
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+}
+.field input {
+  border: 1px solid var(--border); border-radius: 12px;
+  background: rgba(255,255,255,.03); color: var(--text);
+  padding: 10px 14px; font-size: 14px; outline: none; transition: border-color .2s;
+}
+.field input:focus { border-color: rgba(124,58,237,.5); }
+
+.manual-card { display: flex; flex-direction: column; }
+.manual-card form { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+.manual-hint { padding: 10px 20px 0; font-size: 13px; color: var(--muted); }
+.manual-card textarea {
+  min-height: 100px; resize: vertical;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: rgba(255,255,255,.03); color: var(--text);
+  padding: 12px 14px; font-size: 12px; outline: none;
+  transition: border-color .2s;
+  font-family: 'JetBrains Mono', monospace;
+}
+.manual-card textarea:focus { border-color: rgba(124,58,237,.5); }
+
+.ghost-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  min-height: 38px; padding: 0 16px;
+  border-radius: 12px; border: 1px solid var(--border);
+  background: rgba(255,255,255,.04); color: var(--text);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background .2s, border-color .2s;
+}
+.ghost-btn:hover { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); }
+.primary-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 42px; padding: 0 20px;
+  border-radius: 12px; border: none;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; font-size: 14px; font-weight: 700; cursor: pointer;
+  transition: filter .2s, opacity .2s;
+}
+.primary-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.primary-btn:disabled { opacity: .55; cursor: not-allowed; }
+.full-width { width: 100%; }
+
+.stat-chip {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 8px 16px; border-radius: 12px;
+  background: rgba(255,255,255,.04); border: 1px solid var(--border);
+  opacity: 0;
+}
+.stat-num { font-size: 20px; font-weight: 800; line-height: 1; letter-spacing: -.03em; }
+.stat-label { font-size: 10px; color: var(--soft); margin-top: 2px; text-transform: uppercase; letter-spacing: .05em; }
+
+.right-col { position: sticky; top: 88px; }
+.result-card {
+  border: 1px solid; border-radius: 20px; overflow: hidden;
+  display: flex; flex-direction: column; opacity: 0;
+}
+.result-status {
+  display: flex; align-items: center; gap: 16px;
+  padding: 20px; border-bottom: 1px solid;
+}
+.result-icon-wrap {
+  width: 52px; height: 52px; border-radius: 16px;
+  display: grid; place-items: center; flex-shrink: 0;
+}
+.result-label {
+  font-size: 11px; font-weight: 800;
+  letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px;
+}
+.result-message { font-size: 15px; font-weight: 600; color: var(--text); line-height: 1.35; }
+.result-body { padding: 16px 20px 4px; display: flex; flex-direction: column; gap: 14px; }
+.section-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--soft);
+}
+.info-grid { display: flex; flex-direction: column; gap: 10px; }
+.info-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; font-size: 14px; }
+.info-row span { color: var(--muted); flex-shrink: 0; }
+.info-row strong { color: var(--text); font-weight: 600; text-align: right; }
+
+.owner-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px; border-radius: 14px;
+  background: rgba(255,255,255,.03); border: 1px solid var(--border-subtle);
+}
+.owner-avatar {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  display: grid; place-items: center;
+  font-size: 14px; font-weight: 800; color: #fff; flex-shrink: 0;
+}
+.owner-name { font-size: 15px; font-weight: 700; }
+.owner-email { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+.raw-box {
+  padding: 14px; border-radius: 14px;
+  background: rgba(0,0,0,.2); border: 1px solid rgba(255,255,255,.05);
+}
+.raw-box span {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--soft);
+}
+.raw-box code {
+  display: block; margin-top: 8px; font-size: 12px;
+  font-family: 'JetBrains Mono', monospace; color: #d8b4fe;
+  white-space: pre-wrap; word-break: break-all;
+}
+.result-idle {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 12px; padding: 40px 20px;
+  text-align: center; color: var(--soft); font-size: 14px;
+}
+.result-footer { padding: 16px 20px 20px; border-top: 1px solid var(--border-subtle); }
+.next-scan-btn {
+  width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; border-radius: 12px;
+  border: 1px solid var(--border); background: rgba(255,255,255,.04);
+  color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: background .2s;
+}
+.next-scan-btn:hover { background: rgba(255,255,255,.07); }
+
+@media (max-width: 1024px) {
+  .main-grid { grid-template-columns: 1fr; }
+  .right-col { position: static; }
+}
+@media (max-width: 640px) {
+  .page-layout { padding: 24px 16px 64px; }
+  .page-title { font-size: 36px; }
+  .bottom-row { grid-template-columns: 1fr; }
+  .page-header { flex-direction: column; align-items: flex-start; }
+  .camera-viewport, .camera-idle { min-height: 300px; }
 }
 `;

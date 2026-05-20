@@ -4,6 +4,15 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import { API_BASE_URL } from '@/lib/supabase/api';
+
+
+interface TicketType {
+  id: string;
+  name: string;
+  price: string; // viene como string decimal
+  currency: string;
+}
 
 interface Event {
   id: string;
@@ -15,101 +24,160 @@ interface Event {
   endsAt: string;
   isPublished: boolean;
   organizer?: { id: string; fullName: string; email: string };
+  ticketTypes?: TicketType[];
 }
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('es-MX', {
-    weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
   });
 }
 function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleTimeString('es-MX', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
-const PALETTE = ['#00c2b3','#f5a623','#e05c5c','#7c3aed','#2563eb','#16a34a','#db2777','#ea580c'];
+const PALETTE = [
+  '#00c2b3',
+  '#f5a623',
+  '#e05c5c',
+  '#7c3aed',
+  '#2563eb',
+  '#16a34a',
+  '#db2777',
+  '#ea580c',
+];
 function colorFor(str: string) {
-  let h = 0; for (let i = 0; i < str.length; i++) h = str.charCodeAt(i) + ((h << 5) - h);
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = str.charCodeAt(i) + ((h << 5) - h);
+  }
   return PALETTE[Math.abs(h) % PALETTE.length];
 }
-function initials(t: string) { return t.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase(); }
-
-const TICKET_PRICE = 250; // MXN mock
+function initials(t: string) {
+  return t
+    .split(' ')
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join('')
+    .toUpperCase();
+}
 
 export default function CheckoutPage() {
-  const params   = useParams<{ id: string }>();
-  const router   = useRouter();
-  const id       = params?.id;
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const id = params?.id;
 
-  const [event,    setEvent]    = useState<Event | null>(null);
-  const [loading,  setLoading]  = useState(true);
-  const [qty,      setQty]      = useState(1);
-  const [buying,   setBuying]   = useState(false);
-  const [error,    setError]    = useState('');
+  const [event, setEvent] = useState<Event | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [qty, setQty] = useState(1);
+  const [selectedTypeId, setSelectedTypeId] = useState<string | null>(null);
+  const [buying, setBuying] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (!id) return;
-    fetch(`http://localhost:3001/events/${id}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setEvent(d); })
+    fetch(`${API_BASE_URL}/events/${id}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) {
+          setEvent(d);
+          // Auto-seleccionar el primer tipo de boleto
+          if (d.ticketTypes?.length > 0) {
+            setSelectedTypeId(d.ticketTypes[0].id);
+          }
+        }
+      })
       .catch(() => setError('No se pudo cargar el evento.'))
       .finally(() => setLoading(false));
   }, [id]);
 
-  const total = qty * TICKET_PRICE;
   const color = event ? colorFor(event.title) : '#00c2b3';
-  const abbr  = event ? initials(event.title) : '';
+  const abbr = event ? initials(event.title) : '';
 
-async function handleBuy() {
-  if (!event) return;
-  setBuying(true);
-  setError('');
+  const ticketTypes = event?.ticketTypes ?? [];
+  const selectedTicketType = ticketTypes.find((t) => t.id === selectedTypeId) ?? ticketTypes[0] ?? null;
+  const ticketPrice = selectedTicketType ? Number(selectedTicketType.price) : 0;
+  const ticketName = selectedTicketType?.name ?? 'Entrada general';
+  const hasTicketTypes = ticketTypes.length > 0;
+  const total = qty * ticketPrice;
 
-  try {
-    const supabase = createClient();
+  async function handleBuy() {
+    if (!event) return;
 
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-
-    if (sessionError) {
-      throw new Error('No se pudo obtener la sesión');
+    const ticketType = selectedTicketType;
+    if (!ticketType) {
+      setError('No hay tipo de boleto disponible para este evento.');
+      return;
     }
 
-    if (!session?.access_token) {
-      throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
+    setBuying(true);
+    setError('');
+
+    try {
+      const supabase = createClient();
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) {
+        throw new Error('No se pudo obtener la sesión');
+      }
+
+      if (!session?.access_token) {
+        throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
+      }
+
+      const res = await fetch(`${API_BASE_URL}/tickets`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          eventId: event.id,
+          ticketTypeId: ticketType.id,
+          quantity: qty,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || `Error ${res.status}`);
+      }
+
+      const ticket = await res.json();
+      router.push(`/tickets/${ticket.id}?new=1`);
+    } catch (e: any) {
+      setError(e.message ?? 'Ocurrió un error al procesar la compra.');
+    } finally {
+      setBuying(false);
     }
-
-    const res = await fetch('http://localhost:3001/tickets', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({ eventId: event.id, quantity: qty }),
-    });
-
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.message || `Error ${res.status}`);
-    }
-
-    const ticket = await res.json();
-    router.push(`/tickets/${ticket.id}?new=1`);
-  } catch (e: any) {
-    setError(e.message ?? 'Ocurrió un error al procesar la compra.');
-    setBuying(false);
   }
-}
 
   return (
     <>
-      <style>{CSS}</style>
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
       <div className="page-root">
         <nav className="top-nav">
           <div className="nav-inner">
             <Link href={`/events/${id}`} className="back-btn">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
               Regresar
             </Link>
             <span className="nav-title">Checkout</span>
@@ -124,100 +192,229 @@ async function handleBuy() {
           ) : !event ? (
             <div className="error-state">
               <p>No se encontró el evento.</p>
-              <Link href="/discover" className="back-link">← Regresar a Descubrir</Link>
+              <Link href="/discover" className="back-link">
+                ← Regresar a Descubrir
+              </Link>
             </div>
           ) : (
             <>
-              {/* ── Resumen del evento ── */}
+              {/* Resumen del evento */}
               <section className="event-summary" aria-label="Resumen del evento">
-                <div className="summary-banner" style={{ background: `linear-gradient(135deg, ${color}20 0%, #0e0e0f 100%)` }}>
-                  <div className="summary-avatar" style={{ background: color }}>{abbr}</div>
+                <div
+                  className="summary-banner"
+                  style={{
+                    background: `linear-gradient(135deg, ${color}20 0%, #0e0e0f 100%)`,
+                  }}
+                >
+                  <div className="summary-avatar" style={{ background: color }}>
+                    {abbr}
+                  </div>
                 </div>
                 <div className="summary-body">
                   <h1 className="summary-title">{event.title}</h1>
                   <div className="summary-meta-row">
                     <span className="summary-meta">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <rect x="3" y="4" width="18" height="18" rx="2" />
+                        <line x1="16" y1="2" x2="16" y2="6" />
+                        <line x1="8" y1="2" x2="8" y2="6" />
+                        <line x1="3" y1="10" x2="21" y2="10" />
+                      </svg>
                       {fmtDate(event.startsAt)}, {fmtTime(event.startsAt)}
                     </span>
                     <span className="summary-meta">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" />
+                        <circle cx="12" cy="10" r="3" />
+                      </svg>
                       {event.venueName}, {event.venueCity}
                     </span>
                   </div>
                 </div>
               </section>
 
-              {/* ── Selector de boletos ── */}
-              <section className="ticket-selector" aria-label="Seleccionar boletos">
-                <h2 className="section-label">Boleto de entrada general</h2>
-                <div className="ticket-row">
-                  <div className="ticket-info">
-                    <span className="ticket-name">Entrada General</span>
-                    <span className="ticket-price">${TICKET_PRICE.toLocaleString('es-MX')} MXN</span>
-                  </div>
-                  <div className="qty-control" role="group" aria-label="Cantidad de boletos">
-                    <button
-                      className="qty-btn"
-                      onClick={() => setQty(q => Math.max(1, q - 1))}
-                      disabled={qty <= 1}
-                      aria-label="Quitar boleto"
-                    >−</button>
-                    <span className="qty-value" aria-live="polite">{qty}</span>
-                    <button
-                      className="qty-btn"
-                      onClick={() => setQty(q => Math.min(10, q + 1))}
-                      disabled={qty >= 10}
-                      aria-label="Agregar boleto"
-                    >+</button>
-                  </div>
-                </div>
-                <p className="qty-hint">Máximo 10 boletos por compra</p>
-              </section>
+              {/* Selector de boletos o mensaje vacío */}
+              {!hasTicketTypes ? (
+                <section className="ticket-selector">
+                  <p className="qty-hint">
+                    Este evento todavía no tiene tipos de boleto configurados.
+                  </p>
+                </section>
+              ) : (
+                <>
+                  <section
+                    className="ticket-selector"
+                    aria-label="Seleccionar boletos"
+                  >
+                    <h2 className="section-label">Selecciona tu boleto</h2>
 
-              {/* ── Resumen de pago ── */}
-              <section className="order-summary" aria-label="Resumen de orden">
-                <h2 className="section-label">Resumen de orden</h2>
-                <div className="order-lines">
-                  <div className="order-line">
-                    <span>Entrada General × {qty}</span>
-                    <span>${(qty * TICKET_PRICE).toLocaleString('es-MX')} MXN</span>
-                  </div>
-                  <div className="order-line muted">
-                    <span>Cargos por servicio</span>
-                    <span>Incluidos</span>
-                  </div>
-                  <div className="order-divider" />
-                  <div className="order-line total">
-                    <span>Total</span>
-                    <span style={{ color }}>${total.toLocaleString('es-MX')} MXN</span>
-                  </div>
-                </div>
-              </section>
+                    {/* Cards de tipos de boleto */}
+                    <div className="ticket-type-list">
+                      {ticketTypes.map((tt) => {
+                        const isSelected = tt.id === (selectedTypeId ?? ticketTypes[0]?.id);
+                        return (
+                          <button
+                            key={tt.id}
+                            className={`ticket-type-card${isSelected ? ' selected' : ''}`}
+                            style={isSelected ? { borderColor: color, boxShadow: `0 0 0 1px ${color}40` } : {}}
+                            onClick={() => setSelectedTypeId(tt.id)}
+                            aria-pressed={isSelected}
+                          >
+                            <div className="ttc-left">
+                              <span className="ttc-check" style={isSelected ? { background: color } : {}}>
+                                {isSelected && (
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0e0e0f" strokeWidth="3">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                )}
+                              </span>
+                              <span className="ttc-name">{tt.name}</span>
+                            </div>
+                            <span className="ttc-price" style={isSelected ? { color } : {}}>
+                              ${Number(tt.price).toLocaleString('es-MX')} {tt.currency}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-              {/* ── Error ── */}
+                    {/* Cantidad */}
+                    <div className="ticket-row" style={{ marginTop: '1rem' }}>
+                      <div className="ticket-info">
+                        <span className="ticket-name">{ticketName}</span>
+                        <span className="ticket-price">
+                          ${ticketPrice.toLocaleString('es-MX')} MXN por boleto
+                        </span>
+                      </div>
+                      <div
+                        className="qty-control"
+                        role="group"
+                        aria-label="Cantidad de boletos"
+                      >
+                        <button
+                          className="qty-btn"
+                          onClick={() => setQty((q) => Math.max(1, q - 1))}
+                          disabled={qty <= 1}
+                          aria-label="Quitar boleto"
+                        >
+                          −
+                        </button>
+                        <span className="qty-value" aria-live="polite">
+                          {qty}
+                        </span>
+                        <button
+                          className="qty-btn"
+                          onClick={() => setQty((q) => Math.min(10, q + 1))}
+                          disabled={qty >= 10}
+                          aria-label="Agregar boleto"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <p className="qty-hint">Máximo 10 boletos por compra</p>
+                  </section>
+
+                  {/* Resumen de pago */}
+                  <section
+                    className="order-summary"
+                    aria-label="Resumen de orden"
+                  >
+                    <h2 className="section-label">Resumen de orden</h2>
+                    <div className="order-lines">
+                      <div className="order-line">
+                        <span>
+                          {ticketName} × {qty}
+                        </span>
+                        <span>
+                          $
+                          {(qty * ticketPrice).toLocaleString('es-MX')} MXN
+                        </span>
+                      </div>
+                      <div className="order-line muted">
+                        <span>Cargos por servicio</span>
+                        <span>Incluidos</span>
+                      </div>
+                      <div className="order-divider" />
+                      <div className="order-line total">
+                        <span>Total</span>
+                        <span style={{ color }}>
+                          ${total.toLocaleString('es-MX')} MXN
+                        </span>
+                      </div>
+                    </div>
+                  </section>
+                </>
+              )}
+
+              {/* Error */}
               {error && (
                 <div className="error-banner" role="alert">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
                   {error}
                 </div>
               )}
 
-              {/* ── CTA ── */}
+              {/* CTA */}
               <button
                 className="buy-btn"
                 style={{ background: color }}
                 onClick={handleBuy}
-                disabled={buying}
+                disabled={buying || !hasTicketTypes}
                 aria-busy={buying}
               >
                 {buying ? (
-                  <><div className="btn-spinner" /><span>Procesando…</span></>
+                  <>
+                    <div className="btn-spinner" />
+                    <span>Procesando…</span>
+                  </>
                 ) : (
-                  <><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg><span>Confirmar compra · ${total.toLocaleString('es-MX')} MXN</span></>
+                  <>
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                    >
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    <span>
+                      Confirmar compra · $
+                      {total.toLocaleString('es-MX')} MXN
+                    </span>
+                  </>
                 )}
               </button>
-              <p className="buy-note">Al confirmar aceptas los términos de uso. Sin reembolsos.</p>
+              <p className="buy-note">
+                Al confirmar aceptas los términos de uso. Sin reembolsos.
+              </p>
             </>
           )}
         </main>
@@ -265,7 +462,7 @@ const CSS = `
   .ticket-info{display:flex;flex-direction:column;gap:0.15rem;}
   .ticket-name{font-size:0.9rem;font-weight:600;color:var(--text);}
   .ticket-price{font-size:0.82rem;color:var(--text-muted);}
-  .qty-control{display:flex;align-items:center;gap:0.5rem;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-full, 9999px);padding:0.2rem;}
+  .qty-control{display:flex;align-items:center;gap:0.5rem;background:var(--surface-2);border:1px solid var(--border);border-radius:9999px;padding:0.2rem;}
   .qty-btn{width:32px;height:32px;border-radius:9999px;background:none;border:none;color:var(--text);font-size:1.1rem;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background var(--tr);line-height:1;}
   .qty-btn:hover:not(:disabled){background:var(--surface-3);}
   .qty-btn:disabled{color:var(--text-faint);cursor:not-allowed;}
@@ -294,6 +491,16 @@ const CSS = `
   @keyframes spin{to{transform:rotate(360deg)}}
   .spinner{width:28px;height:28px;border:2px solid var(--surface-3);border-top-color:var(--accent);border-radius:9999px;animation:spin 0.7s linear infinite;margin:4rem auto;}
   .btn-spinner{width:16px;height:16px;border:2px solid oklch(0 0 0/0.3);border-top-color:#0e0e0f;border-radius:9999px;animation:spin 0.7s linear infinite;flex-shrink:0;}
+
+  /* Ticket type cards */
+  .ticket-type-list{display:flex;flex-direction:column;gap:0.5rem;}
+  .ticket-type-card{width:100%;display:flex;align-items:center;justify-content:space-between;gap:0.75rem;padding:0.7rem 0.875rem;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-md);cursor:pointer;transition:border-color var(--tr),box-shadow var(--tr),background var(--tr);font-family:var(--font);text-align:left;}
+  .ticket-type-card:hover{background:var(--surface-3);border-color:var(--border-hover);}
+  .ticket-type-card.selected{background:var(--surface-2);}
+  .ttc-left{display:flex;align-items:center;gap:0.6rem;}
+  .ttc-check{width:18px;height:18px;border-radius:9999px;border:1.5px solid var(--border-hover);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background var(--tr),border-color var(--tr);}
+  .ttc-name{font-size:0.875rem;font-weight:600;color:var(--text);}
+  .ttc-price{font-size:0.82rem;font-weight:600;color:var(--text-muted);white-space:nowrap;transition:color var(--tr);}
 
   .loading-state{display:flex;justify-content:center;padding:4rem 0;}
   .error-state{text-align:center;padding:4rem 0;color:var(--text-muted);}

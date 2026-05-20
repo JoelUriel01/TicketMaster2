@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import { API_BASE_URL } from '@/lib/supabase/api';
+
 
 interface Ticket {
   id: string;
@@ -29,11 +31,22 @@ interface Ticket {
   };
 }
 
+interface EventGroup {
+  eventId: string;
+  title: string;
+  venueName: string;
+  venueCity: string;
+  startsAt: string;
+  tickets: Ticket[];
+  color: string;
+  abbr: string;
+}
+
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('es-MX', {
-    weekday: 'short',
+    weekday: 'long',
     day: '2-digit',
-    month: 'short',
+    month: 'long',
     year: 'numeric',
   });
 }
@@ -54,37 +67,184 @@ function colorFor(str: string) {
 }
 
 function initials(t: string) {
-  return t
-    .split(' ')
-    .slice(0, 2)
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase();
+  return t.split(' ').slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+}
+
+function groupTicketsByEvent(tickets: Ticket[]): EventGroup[] {
+  const map = new Map<string, EventGroup>();
+  for (const t of tickets) {
+    const key = t.eventId;
+    const title = t.event?.title ?? 'Evento';
+    if (!map.has(key)) {
+      map.set(key, {
+        eventId: key,
+        title,
+        venueName: t.event?.venueName ?? '—',
+        venueCity: t.event?.venueCity ?? '—',
+        startsAt: t.event?.startsAt ?? '',
+        tickets: [],
+        color: colorFor(title),
+        abbr: initials(title),
+      });
+    }
+    map.get(key)!.tickets.push(t);
+  }
+  return Array.from(map.values());
+}
+
+function StatusPill({ status }: { status: string }) {
+  const s = (status ?? 'active').toLowerCase();
+  return <span className={`status-pill status-${s}`}>{status}</span>;
+}
+
+function TicketRow({ ticket }: { ticket: Ticket }) {
+  const shortId = ticket.id.slice(0, 8).toUpperCase();
+  return (
+    <Link href={`/tickets/${ticket.id}`} className="ticket-row-item">
+      <div className="ticket-row-left">
+        <span className="ticket-code">#{shortId}</span>
+        <StatusPill status={ticket.status} />
+      </div>
+      <div className="ticket-row-right">
+        <span className="ticket-price">
+          ${Number(ticket.price).toLocaleString('es-MX')} {ticket.currency}
+        </span>
+        <svg className="ticket-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </div>
+    </Link>
+  );
+}
+
+function EventCard({ group, index }: { group: EventGroup; index: number }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(true);
+
+  useEffect(() => {
+    // GSAP entrance animation
+    if (typeof window === 'undefined') return;
+    import('gsap').then(({ gsap }) => {
+      if (cardRef.current) {
+        gsap.fromTo(
+          cardRef.current,
+          { opacity: 0, y: 40, scale: 0.97 },
+          {
+            opacity: 1,
+            y: 0,
+            scale: 1,
+            duration: 0.6,
+            delay: index * 0.1,
+            ease: 'power3.out',
+          }
+        );
+      }
+    });
+  }, [index]);
+
+  const totalCost = group.tickets.reduce((sum, t) => sum + Number(t.price), 0);
+  const activeCount = group.tickets.filter((t) => (t.status ?? '').toLowerCase() === 'active').length;
+
+  return (
+    <div ref={cardRef} className="event-card" style={{ '--accent-color': group.color } as React.CSSProperties}>
+      <div className="event-card-header" onClick={() => setExpanded((v) => !v)}>
+        <div className="event-header-left">
+          <div className="event-avatar" style={{ background: group.color }}>
+            {group.abbr}
+          </div>
+          <div className="event-meta">
+            <h2 className="event-title">{group.title}</h2>
+            {group.startsAt && (
+              <p className="event-datetime">
+                {fmtDate(group.startsAt)} · {fmtTime(group.startsAt)}
+              </p>
+            )}
+            <p className="event-venue">
+              {group.venueName}
+              {group.venueCity ? `, ${group.venueCity}` : ''}
+            </p>
+          </div>
+        </div>
+
+        <div className="event-header-right">
+          <div className="event-stats">
+            <div className="stat-chip">
+              <span className="stat-num">{group.tickets.length}</span>
+              <span className="stat-label">{group.tickets.length === 1 ? 'boleto' : 'boletos'}</span>
+            </div>
+            {activeCount > 0 && (
+              <div className="stat-chip stat-active">
+                <span className="stat-num">{activeCount}</span>
+                <span className="stat-label">activos</span>
+              </div>
+            )}
+          </div>
+          <svg
+            className={`chevron-icon ${expanded ? 'chevron-open' : ''}`}
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="event-card-body">
+          <div className="tickets-list">
+            {group.tickets.map((ticket) => (
+              <TicketRow key={ticket.id} ticket={ticket} />
+            ))}
+          </div>
+          <div className="event-card-footer">
+            <span className="footer-label">Total pagado</span>
+            <span className="footer-total">
+              ${totalCost.toLocaleString('es-MX')} {group.tickets[0]?.currency ?? ''}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function MyTicketsPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const headerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    import('gsap').then(({ gsap }) => {
+      if (headerRef.current) {
+        gsap.fromTo(
+          headerRef.current.querySelectorAll('.anim-header > *'),
+          { opacity: 0, y: 20 },
+          { opacity: 1, y: 0, stagger: 0.12, duration: 0.7, ease: 'power3.out' }
+        );
+      }
+    });
+  }, []);
 
   useEffect(() => {
     async function loadTickets() {
       try {
         const supabase = createClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
+        const { data: { session } } = await supabase.auth.getSession();
 
         if (!session?.access_token) {
           setError('Tu sesión expiró. Inicia sesión nuevamente.');
           return;
         }
 
-        const res = await fetch('http://localhost:3001/tickets/me', {
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
-        });
+const res = await fetch(`${API_BASE_URL}/tickets/me`, {
+  headers: { Authorization: `Bearer ${session.access_token}` },
+}); 
 
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -99,14 +259,16 @@ export default function MyTicketsPage() {
         setLoading(false);
       }
     }
-
     loadTickets();
   }, []);
+
+  const groups = groupTicketsByEvent(tickets);
+  const totalTickets = tickets.length;
+  const totalEvents = groups.length;
 
   return (
     <>
       <style>{CSS}</style>
-
       <div className="page-root">
         <nav className="top-nav">
           <div className="nav-inner">
@@ -121,9 +283,28 @@ export default function MyTicketsPage() {
         </nav>
 
         <main className="tickets-layout">
-          <header className="tickets-header">
-            <h1 className="tickets-title">Mis boletos</h1>
-            <p className="tickets-subtitle">Aquí verás todos los boletos que has adquirido.</p>
+          <header ref={headerRef} className="tickets-header">
+            <div className="anim-header">
+              <h1 className="tickets-title">Mis boletos</h1>
+              <p className="tickets-subtitle">Aquí verás todos los boletos que has adquirido.</p>
+              {!loading && !error && tickets.length > 0 && (
+                <div className="summary-pills">
+                  <span className="summary-pill">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                      <rect x="3" y="4" width="18" height="18" rx="2" />
+                      <path d="M3 10h18" />
+                    </svg>
+                    {totalEvents} {totalEvents === 1 ? 'evento' : 'eventos'}
+                  </span>
+                  <span className="summary-pill">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                      <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V9z" />
+                    </svg>
+                    {totalTickets} {totalTickets === 1 ? 'boleto' : 'boletos'}
+                  </span>
+                </div>
+              )}
+            </div>
           </header>
 
           {loading ? (
@@ -133,85 +314,26 @@ export default function MyTicketsPage() {
           ) : error ? (
             <div className="error-state">
               <p>{error}</p>
-              <Link href="/discover" className="back-link">
-                ← Volver a descubrir eventos
-              </Link>
+              <Link href="/discover" className="action-btn">← Volver a descubrir eventos</Link>
             </div>
           ) : tickets.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon">
                 <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V9z" />
-                  <path d="M13 5v2" />
-                  <path d="M13 17v2" />
-                  <path d="M13 11v2" />
+                  <path d="M13 5v2M13 17v2M13 11v2" />
                 </svg>
               </div>
               <h2>Sin boletos todavía</h2>
               <p>Cuando adquieras un boleto, aparecerá aquí.</p>
-              <Link href="/discover" className="discover-btn">
-                Descubrir eventos
-              </Link>
+              <Link href="/discover" className="action-btn">Descubrir eventos</Link>
             </div>
           ) : (
-            <section className="tickets-grid" aria-label="Lista de boletos">
-              {tickets.map((ticket) => {
-                const title = ticket.event?.title ?? 'Evento';
-                const color = colorFor(title);
-                const abbr = initials(title);
-                const shortId = ticket.id.slice(0, 8).toUpperCase();
-
-                return (
-                  <Link key={ticket.id} href={`/tickets/${ticket.id}`} className="ticket-card">
-                    <div
-                      className="ticket-top"
-                      style={{ background: `linear-gradient(135deg, ${color}28 0%, #17171a 100%)` }}
-                    >
-                      <div className="ticket-avatar" style={{ background: color }}>
-                        {abbr}
-                      </div>
-
-                      <div className="ticket-top-info">
-                        <h2>{title}</h2>
-                        {ticket.event && (
-                          <p>
-                            {fmtDate(ticket.event.startsAt)}, {fmtTime(ticket.event.startsAt)}
-                          </p>
-                        )}
-                      </div>
-
-                      <span className={`status-badge status-${(ticket.status ?? 'active').toLowerCase()}`}>
-                        {ticket.status}
-                      </span>
-                    </div>
-
-                    <div className="ticket-body">
-                      <div className="ticket-row">
-                        <span>Recinto</span>
-                        <strong>{ticket.event?.venueName ?? '—'}</strong>
-                      </div>
-
-                      <div className="ticket-row">
-                        <span>Ciudad</span>
-                        <strong>{ticket.event?.venueCity ?? '—'}</strong>
-                      </div>
-
-                      <div className="ticket-row">
-                        <span>Precio</span>
-                        <strong>
-                          ${Number(ticket.price).toLocaleString('es-MX')} {ticket.currency}
-                        </strong>
-                      </div>
-
-                      <div className="ticket-row">
-                        <span>Código</span>
-                        <strong>#{shortId}</strong>
-                      </div>
-                    </div>
-                  </Link>
-                );
-              })}
-            </section>
+            <div className="events-list">
+              {groups.map((group, i) => (
+                <EventCard key={group.eventId} group={group} index={i} />
+              ))}
+            </div>
           )}
         </main>
       </div>
@@ -220,264 +342,351 @@ export default function MyTicketsPage() {
 }
 
 const CSS = `
-:root{
-  --bg:#050507;
-  --panel:#101014;
-  --panel-2:#15151b;
-  --border:#23232c;
-  --text:#f4f4f5;
-  --muted:#9a9aa5;
-  --soft:#6f6f78;
-  --accent:#7c3aed;
-  --accent-2:#9333ea;
-  --success:#22c55e;
-  --danger:#ef4444;
+:root {
+  --bg: #050507;
+  --panel: #0e0e12;
+  --panel-2: #13131a;
+  --border: #1e1e28;
+  --border-subtle: rgba(255,255,255,.05);
+  --text: #f0f0f2;
+  --muted: #8888a0;
+  --soft: #5a5a6a;
+  --accent: #7c3aed;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --info: #3b82f6;
 }
 
-*{box-sizing:border-box}
-html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,sans-serif}
-a{text-decoration:none;color:inherit}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { text-decoration: none; color: inherit; }
 
-.page-root{
-  min-height:100vh;
+/* ── Page background ── */
+.page-root {
+  min-height: 100vh;
   background:
-    radial-gradient(circle at top, rgba(124,58,237,.10), transparent 28%),
-    linear-gradient(180deg, #050507 0%, #09090c 100%);
+    radial-gradient(ellipse 80% 40% at 50% -10%, rgba(124,58,237,.12), transparent),
+    linear-gradient(180deg, #050507 0%, #08080c 100%);
 }
 
-.top-nav{
-  position:sticky;
-  top:0;
-  z-index:20;
-  backdrop-filter:blur(18px);
-  background:rgba(5,5,7,.72);
-  border-bottom:1px solid rgba(255,255,255,.05);
+/* ── Nav ── */
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  background: rgba(5,5,7,.75);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.nav-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 14px;
+  transition: color .2s;
+}
+.back-btn:hover { color: var(--text); }
+.nav-title { font-size: 14px; color: #c4c4d0; font-weight: 600; }
+
+/* ── Layout ── */
+.tickets-layout {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 40px 24px 100px;
 }
 
-.nav-inner{
-  max-width:1120px;
-  margin:0 auto;
-  padding:18px 20px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
+/* ── Header ── */
+.tickets-header { margin-bottom: 36px; }
+.tickets-title {
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: -.04em;
+  line-height: 1;
+}
+.tickets-subtitle {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 15px;
+}
+.summary-pills {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.summary-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #c4c4d0;
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--border);
 }
 
-.back-btn{
-  display:inline-flex;
-  align-items:center;
-  gap:8px;
-  color:var(--muted);
-  font-size:14px;
-  transition:.2s ease;
-}
-.back-btn:hover{color:#fff}
-
-.nav-title{
-  font-size:14px;
-  color:#d4d4d8;
-  font-weight:600;
-}
-
-.tickets-layout{
-  max-width:1120px;
-  margin:0 auto;
-  padding:32px 20px 80px;
-}
-
-.tickets-header{
-  margin-bottom:28px;
-}
-
-.tickets-title{
-  margin:0;
-  font-size:40px;
-  line-height:1;
-  letter-spacing:-.03em;
-}
-
-.tickets-subtitle{
-  margin:10px 0 0;
-  color:var(--muted);
-  font-size:15px;
-}
-
+/* ── States ── */
 .loading-state,
 .error-state,
-.empty-state{
-  min-height:52vh;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  text-align:center;
+.empty-state {
+  min-height: 52vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+}
+.spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 3px solid rgba(255,255,255,.07);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  margin-bottom: 8px;
+}
+.empty-state h2 { font-size: 28px; letter-spacing: -.03em; }
+.empty-state p, .error-state p { color: var(--muted); font-size: 15px; }
+.action-btn {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(124,58,237,.4);
+  font-size: 14px;
+  color: #d8b4fe;
+  transition: background .2s, border-color .2s;
+}
+.action-btn:hover { background: rgba(124,58,237,.12); border-color: rgba(124,58,237,.7); }
+
+/* ── Events list ── */
+.events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.spinner{
-  width:44px;
-  height:44px;
-  border-radius:999px;
-  border:3px solid rgba(255,255,255,.08);
-  border-top-color:var(--accent);
-  animation:spin .8s linear infinite;
+/* ── Event card ── */
+.event-card {
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  overflow: hidden;
+  opacity: 0; /* GSAP animates this to 1 */
+  transition: border-color .25s;
 }
-@keyframes spin{to{transform:rotate(360deg)}}
-
-.error-state p,
-.empty-state p{
-  color:var(--muted);
-  margin:10px 0 0;
+.event-card:hover {
+  border-color: rgba(var(--accent-color, 124,58,237), .3);
 }
 
-.back-link,
-.discover-btn{
-  margin-top:18px;
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  min-height:44px;
-  padding:0 18px;
-  border-radius:999px;
-  border:1px solid rgba(124,58,237,.35);
-  color:#e9d5ff;
-  transition:.2s ease;
+/* Header (clickable) */
+.event-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  cursor: pointer;
+  user-select: none;
+  transition: background .2s;
 }
-.back-link:hover,
-.discover-btn:hover{
-  background:rgba(124,58,237,.12);
+.event-card-header:hover { background: rgba(255,255,255,.02); }
+
+.event-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  flex: 1;
 }
 
-.empty-icon{
-  width:64px;
-  height:64px;
-  border-radius:999px;
-  display:grid;
-  place-items:center;
-  color:#b9b9c3;
-  border:1px solid rgba(255,255,255,.06);
-  background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01));
-  margin-bottom:16px;
+.event-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  font-size: 17px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -.02em;
+  box-shadow: inset 0 -6px 14px rgba(0,0,0,.2);
 }
 
-.empty-state h2{
-  margin:0;
-  font-size:30px;
-  letter-spacing:-.03em;
+.event-meta { min-width: 0; }
+.event-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -.025em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.event-datetime {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.event-venue {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.tickets-grid{
-  display:grid;
-  grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));
-  gap:20px;
+.event-header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+.event-stats { display: flex; gap: 8px; }
+.stat-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 7px 14px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--border);
+  min-width: 52px;
+}
+.stat-chip.stat-active {
+  background: rgba(34,197,94,.08);
+  border-color: rgba(34,197,94,.2);
+}
+.stat-num {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -.03em;
+}
+.stat-active .stat-num { color: #86efac; }
+.stat-label {
+  font-size: 10px;
+  color: var(--soft);
+  margin-top: 2px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .05em;
 }
 
-.ticket-card{
-  border-radius:24px;
-  overflow:hidden;
-  border:1px solid var(--border);
-  background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01));
-  box-shadow:0 12px 40px rgba(0,0,0,.28);
-  transition:transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+.chevron-icon {
+  color: var(--soft);
+  transition: transform .3s ease;
+  flex-shrink: 0;
 }
-.ticket-card:hover{
-  transform:translateY(-3px);
-  border-color:rgba(124,58,237,.4);
-  box-shadow:0 18px 48px rgba(0,0,0,.36);
+.chevron-open { transform: rotate(180deg); }
+
+/* Body */
+.event-card-body {
+  border-top: 1px solid var(--border);
+  animation: slideDown .25s ease;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.ticket-top{
-  display:flex;
-  align-items:flex-start;
-  gap:14px;
-  padding:18px;
-  border-bottom:1px dashed rgba(255,255,255,.08);
-}
+/* Tickets list */
+.tickets-list { padding: 6px 0; }
 
-.ticket-avatar{
-  width:54px;
-  height:54px;
-  border-radius:16px;
-  display:grid;
-  place-items:center;
-  font-weight:800;
-  color:#fff;
-  flex-shrink:0;
-  box-shadow:inset 0 -10px 18px rgba(0,0,0,.18);
+.ticket-row-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 22px;
+  transition: background .15s;
+  border-bottom: 1px solid rgba(255,255,255,.03);
+  cursor: pointer;
 }
+.ticket-row-item:last-child { border-bottom: none; }
+.ticket-row-item:hover { background: rgba(255,255,255,.03); }
 
-.ticket-top-info{
-  min-width:0;
-  flex:1;
+.ticket-row-left { display: flex; align-items: center; gap: 12px; }
+.ticket-code {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 13px;
+  color: #c0c0d0;
+  letter-spacing: .04em;
 }
-
-.ticket-top-info h2{
-  margin:0;
-  font-size:20px;
-  line-height:1.1;
-  letter-spacing:-.03em;
+.ticket-row-right { display: flex; align-items: center; gap: 10px; }
+.ticket-price {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
 }
+.ticket-arrow { color: var(--soft); }
 
-.ticket-top-info p{
-  margin:6px 0 0;
-  color:var(--muted);
-  font-size:14px;
+/* Status pills */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
+.status-active  { color: #86efac; background: rgba(34,197,94,.1);  border: 1px solid rgba(34,197,94,.2); }
+.status-used    { color: #93c5fd; background: rgba(59,130,246,.1); border: 1px solid rgba(59,130,246,.2); }
+.status-revoked { color: #fca5a5; background: rgba(239,68,68,.1);  border: 1px solid rgba(239,68,68,.2); }
 
-.ticket-body{
-  padding:18px;
-  display:grid;
-  gap:12px;
+/* Footer */
+.event-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+  background: rgba(255,255,255,.018);
 }
+.footer-label { font-size: 13px; color: var(--muted); }
+.footer-total { font-size: 15px; font-weight: 700; color: var(--text); }
 
-.ticket-row{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:14px;
-  font-size:14px;
-}
-
-.ticket-row span{
-  color:var(--muted);
-}
-
-.ticket-row strong{
-  color:#fff;
-  font-weight:700;
-  text-align:right;
-}
-
-.status-badge{
-  flex-shrink:0;
-  border-radius:999px;
-  padding:8px 12px;
-  font-size:11px;
-  font-weight:800;
-  letter-spacing:.08em;
-  text-transform:uppercase;
-  border:1px solid rgba(255,255,255,.08);
-}
-
-.status-active{
-  color:#86efac;
-  background:rgba(34,197,94,.10);
-}
-
-.status-used{
-  color:#93c5fd;
-  background:rgba(59,130,246,.10);
-}
-
-.status-revoked{
-  color:#fca5a5;
-  background:rgba(239,68,68,.10);
-}
-
-@media (max-width:640px){
-  .nav-inner{padding:16px}
-  .tickets-layout{padding:24px 16px 64px}
-  .tickets-title{font-size:32px}
-  .ticket-top{flex-wrap:wrap}
-  .status-badge{margin-left:auto}
+/* ── Responsive ── */
+@media (max-width: 600px) {
+  .tickets-layout { padding: 28px 16px 80px; }
+  .tickets-title { font-size: 34px; }
+  .event-card-header { flex-wrap: wrap; }
+  .event-header-right { width: 100%; justify-content: flex-end; }
+  .stat-chip { padding: 6px 12px; min-width: 46px; }
+  .event-title { font-size: 16px; }
 }
 `;

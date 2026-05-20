@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { API_BASE_URL } from '@/lib/supabase/api';
+
 
 type AuthUser = {
   id: string;
@@ -47,45 +49,57 @@ export default function DashboardPage() {
     debugToken();
   }, []);
   
-  useEffect(() => {
-    async function loadData() {
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
+useEffect(() => {
+  async function loadData() {
+    // 1) Obtener usuario de Supabase Auth
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
 
-      if (authError || !user) {
-        router.push('/login');
-        return;
-      }
-
-      setAuthUser(user as AuthUser);
-
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', user.id)
-        .maybeSingle();
-
-      if (error) {
-        setErrorMessage(error.message);
-        setLoading(false);
-        return;
-      }
-
-      if (!data) {
-        setErrorMessage('Tu usuario existe en Auth, pero aún no tiene perfil en public.users.');
-        setLoading(false);
-        return;
-      }
-
-      setAppUser(data as AppUser);
-      setFullName(data.fullName);
-      setLoading(false);
+    if (authError || !user) {
+      router.push('/login');
+      return;
     }
 
-    loadData();
-  }, [router, supabase]);
+    setAuthUser(user as AuthUser);
+
+    // 2) Obtener token
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.access_token) {
+      router.push('/login');
+      return;
+    }
+
+    try {
+      // 3) Llamar a tu API Nest: /users/me
+      const res = await fetch(`${API_BASE_URL}/users/me`, {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || 'Error al cargar perfil de usuario');
+      }
+
+      const data = (await res.json()) as AppUser;
+
+      setAppUser(data);
+      setFullName(data.fullName);
+      setLoading(false);
+    } catch (err: any) {
+      setErrorMessage(err.message);
+      setLoading(false);
+    }
+  }
+
+  loadData();
+}, [router, supabase]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -93,40 +107,60 @@ export default function DashboardPage() {
     router.refresh();
   }
 
-  async function handleUpdateProfile(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setErrorMessage(null);
-    setSuccessMessage(null);
+async function handleUpdateProfile(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+  setErrorMessage(null);
+  setSuccessMessage(null);
 
-    if (!authUser) return;
+  if (!authUser) return;
 
-    if (!fullName.trim()) {
-      setErrorMessage('El nombre no puede estar vacío.');
-      return;
-    }
+  if (!fullName.trim()) {
+    setErrorMessage('El nombre no puede estar vacío.');
+    return;
+  }
 
-    setSaving(true);
+  setSaving(true);
 
-    const { data, error } = await supabase
-      .from('users')
-      .update({
-        fullName: fullName.trim(),
-        updatedAt: new Date().toISOString(),
-      })
-      .eq('id', authUser.id)
-      .select()
-      .single();
+  try {
+    // 1) obtener sesión para sacar el access token
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
 
-    if (error) {
-      setErrorMessage(error.message);
+    if (!session?.access_token) {
+      setErrorMessage('Sesión inválida. Vuelve a iniciar sesión.');
       setSaving(false);
       return;
     }
 
-    setAppUser(data as AppUser);
+    // 2) llamar a tu backend: PATCH /users/me
+    const res = await fetch(`${API_BASE_URL}/users/me`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        fullName: fullName.trim(),
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Error al actualizar perfil');
+    }
+
+    const data = (await res.json()) as AppUser;
+
+    // 3) actualizar estado en el front
+    setAppUser(data);
     setSuccessMessage('Perfil actualizado correctamente.');
+  } catch (err: any) {
+    setErrorMessage(err.message);
+  } finally {
     setSaving(false);
   }
+}
 
   if (loading) {
     return (

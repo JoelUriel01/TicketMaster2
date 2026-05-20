@@ -120,7 +120,8 @@ export class ScansService {
         };
       }
 
-      if (ticket.event.endsAt < now) {
+      // Solo marcar como expirado si endsAt existe Y ya pasó
+      if (ticket.event.endsAt && ticket.event.endsAt < now) {
         await tx.scanLog.create({
           data: {
             ticketId: ticket.id,
@@ -136,7 +137,7 @@ export class ScansService {
         return {
           ok: false,
           result: ScanResult.EXPIRED,
-          message: 'El boleto expiró',
+          message: `El evento "${ticket.event.title}" ya finalizó`,
           ticketId: ticket.id,
         };
       }

@@ -4,6 +4,9 @@ export class CreateTicketDto {
   @IsUUID()
   eventId: string;
 
+  @IsUUID()
+  ticketTypeId: string;
+
   @IsInt()
   @Min(1)
   @Max(10)

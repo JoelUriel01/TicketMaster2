@@ -28,23 +28,99 @@ export class UsersService {
     });
   }
 
+  // NUEVO: crear si no existe
+  async findOrCreateMe(userIdFromAuth: string, email: string, fullName?: string) {
+    let user = await this.prisma.user.findUnique({
+      where: { id: userIdFromAuth },
+    });
+
+    if (!user) {
+      user = await this.prisma.user.create({
+        data: {
+          id: userIdFromAuth,
+          email,
+          fullName: fullName ?? '',
+          // opcional: role por defecto
+          // role: UserRole.BUYER,
+        },
+      });
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      emailVerified: user.emailVerified,
+      phoneVerified: user.phoneVerified,
+      mfaEnabled: user.mfaEnabled,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+  }
+
   async findMe(userId: string) {
-  const user = await this.prisma.user.findUnique({
-    where: { id: userId },
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        emailVerified: true,
+        phoneVerified: true,
+        mfaEnabled: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    return user;
+  }
+
+  async updateProfile(userId: string, fullName: string) {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!existingUser) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { fullName },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        emailVerified: true,
+        phoneVerified: true,
+        mfaEnabled: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return updated;
+  }
+
+  async updateRole(id: string, role: UserRole) {
+  return this.prisma.user.update({
+    where: { id },
+    data: { role },
     select: {
       id: true,
       email: true,
       fullName: true,
       role: true,
-      createdAt: true,
       updatedAt: true,
     },
   });
-
-  if (!user) {
-    throw new NotFoundException('Usuario no encontrado');
-  }
-
-  return user;
 }
 }

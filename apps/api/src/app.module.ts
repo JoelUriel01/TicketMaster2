@@ -8,6 +8,8 @@ import { EventsModule } from './events/events.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { TransfersModule } from './transfers/transfers.module';
 import { ScansModule } from './scans/scans.module';
+import { TicketTypesModule } from './ticket-types/ticket-types.module';
+
 
 
 @Module({
@@ -24,6 +26,8 @@ import { ScansModule } from './scans/scans.module';
     TicketsModule,
     TransfersModule,
     ScansModule,
+    TicketTypesModule,
+
   ],
 })
 export class AppModule {}

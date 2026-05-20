@@ -76,4 +76,12 @@ publish(@Param('id') id: string, @Req() req: any) {
 unpublish(@Param('id') id: string, @Req() req: any) {
   return this.eventsService.unpublish(id, req.user.id);
 }
+
+@Get(':id/ticket-types')
+@UseGuards(SupabaseAuthGuard, RolesGuard)
+@Roles(UserRole.ORGANIZER)
+findTicketTypes(@Param('id') id: string) {
+  return this.eventsService.findTicketTypes(id);
+}
+
 }

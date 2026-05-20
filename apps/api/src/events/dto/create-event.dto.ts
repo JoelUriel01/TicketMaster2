@@ -1,4 +1,4 @@
-import { IsBoolean, IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsDateString, IsNotEmpty, IsOptional, IsString, IsUrl, IsIn} from 'class-validator';
 
 export class CreateEventDto {
   @IsString()
@@ -26,4 +26,14 @@ export class CreateEventDto {
   @IsBoolean()
   @IsOptional()
   isPublished?: boolean;
+  
+  @IsOptional()
+  @IsUrl()
+  bannerUrl?: string;
+
+  @IsOptional()
+  @IsIn(['music', 'theater', 'sport', 'festival', 'other'])
+  category?: string;
+
+  
 }
