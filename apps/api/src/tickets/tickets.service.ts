@@ -274,7 +274,7 @@ async create(userId: string, dto: CreateTicketDto) {
     throw new BadRequestException('Solo los boletos activos pueden generar QR');
   }
 
-  const expiresInSeconds = 300;
+  const expiresInSeconds = 15;
 
   const token = await this.jwtService.signAsync(
     {
