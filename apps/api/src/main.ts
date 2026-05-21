@@ -8,7 +8,6 @@ async function bootstrap() {
 app.enableCors({
   origin: (origin, callback) => {
     const allowed = [
-      'http://localhost:3000',
       process.env.FRONTEND_URL,
     ];
 
