@@ -5,23 +5,27 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-app.enableCors({
-  origin: (origin, callback) => {
-    const allowed = [
-      process.env.FRONTEND_URL,
-    ];
+  const allowed = [
+    'http://localhost:3000',
+    'https://www.ticketflow.lat',
+    'https://ticketflow.lat',
+    process.env.FRONTEND_URL,
+  ].filter(Boolean);
 
-    // Permite cualquier subdominio de vercel.app de tu proyecto
-    const isVercelPreview = origin?.endsWith('.vercel.app');
+  app.enableCors({
+    origin: (origin, callback) => {
+      const isVercelPreview = origin?.endsWith('.vercel.app');
 
-    if (!origin || allowed.includes(origin) || isVercelPreview) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-});
+      if (!origin || allowed.includes(origin) || isVercelPreview) {
+        callback(null, true);
+      } else {
+        callback(new Error(`Not allowed by CORS: ${origin}`));
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -31,7 +35,7 @@ app.enableCors({
     }),
   );
 
-  await app.listen(process.env.PORT ?? 3001);  // Railway inyecta PORT
+  await app.listen(process.env.PORT ?? 3001);
 }
 
 bootstrap();
