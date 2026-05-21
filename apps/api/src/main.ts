@@ -6,7 +6,10 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.enableCors({
-    origin: 'http://localhost:3000',
+    origin: [
+      'http://localhost:3000',
+      process.env.FRONTEND_URL,        // variable de entorno en Railway
+    ].filter(Boolean),
     credentials: true,
   });
 
@@ -18,7 +21,7 @@ async function bootstrap() {
     }),
   );
 
-  await app.listen(3001);
+  await app.listen(process.env.PORT ?? 3001);  // Railway inyecta PORT
 }
 
 bootstrap();
