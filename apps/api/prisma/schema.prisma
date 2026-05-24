@@ -46,6 +46,63 @@ enum ScanResult {
   REPLAY_DETECTED
 }
 
+// Sección física del recinto (IZQ, CTR, DER en el Auditorio ESCOM)
+// Cada evento define sus propios precios por sección mediante EventSectionPrice
+model VenueSection {
+  id          String   @id @default(uuid())
+  // Identificador corto usado en el mapa HTML: "IZQ" | "CTR" | "DER"
+  code        String   @unique               // e.g. "IZQ", "CTR", "DER"
+  label       String                         // e.g. "Izquierda", "Central", "Derecha"
+  colorHex    String?                        // color visual en el mapa, e.g. "#7eb3bc"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  seats              Seat[]
+  eventSectionPrices EventSectionPrice[]
+
+  @@map("venue_sections")
+}
+
+// Asiento físico del recinto — registro permanente, independiente de eventos
+// id compuesto legible: "IZQ-A-01", "CTR-K-11", etc.
+model Seat {
+  id           String   @id                   // e.g. "CTR-B-05"
+  sectionId    String
+  row          String                          // "A" … "K"
+  number       Int                            // 1 … 11
+  seatLabel    String?                        // etiqueta display, e.g. "Fila B, Asiento 5"
+  x            Float?                         // coordenada SVG x (para el mapa)
+  y            Float?                         // coordenada SVG y (para el mapa)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  section      VenueSection @relation(fields: [sectionId], references: [id])
+  tickets      Ticket[]
+
+  @@index([sectionId])
+  @@index([row])
+  @@map("seats")
+}
+
+// Precio que el organizador fija para cada sección en un evento concreto
+// Permite que el mismo recinto tenga precios distintos en cada evento
+model EventSectionPrice {
+  id          String   @id @default(uuid())
+  eventId     String
+  sectionId   String
+  price       Decimal  @db.Decimal(10, 2)
+  currency    String   @default("MXN")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  event       Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  section     VenueSection @relation(fields: [sectionId], references: [id])
+
+  @@unique([eventId, sectionId])             // un precio por sección por evento
+  @@index([eventId])
+  @@map("event_section_prices")
+}
+
 model User {
   id                String       @id
   email             String       @unique
@@ -92,29 +149,33 @@ model Event {
   startsAt        DateTime
   endsAt          DateTime
   isPublished     Boolean   @default(false)
-  bannerUrl       String?                    // URL de imagen del banner (opcional)
+  useVenueMap  Boolean  @default(true)
+  bannerUrl       String?
   category        String?                    // 'music' | 'theater' | 'sport' | 'festival' | 'other'
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  organizer       User      @relation("EventOrganizer", fields: [organizerId], references: [id])
-  orders          Order[]
-  tickets         Ticket[]
-  ticketTypes     TicketType[] 
+  organizer           User                @relation("EventOrganizer", fields: [organizerId], references: [id])
+  orders              Order[]
+  tickets             Ticket[]
+  ticketTypes         TicketType[]
+  eventSectionPrices  EventSectionPrice[] // precios por sección definidos por el organizador
 
   @@index([organizerId])
   @@index([startsAt])
   @@map("events")
 }
 
+// TicketType se mantiene para compatibilidad con flujos sin asignación de asiento
+// (e.g. acceso general sin asiento numerado)
 model TicketType {
   id          String   @id @default(uuid())
   eventId     String
-  name        String           // "General", "VIP", "Palco", etc.
-  description String?          // opcional
+  name        String
+  description String?
   price       Decimal  @db.Decimal(10, 2)
   currency    String   @default("MXN")
-  capacity    Int               // cuántos boletos de este tipo se pueden vender
+  capacity    Int
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -124,7 +185,6 @@ model TicketType {
   @@index([eventId])
   @@map("ticket_types")
 }
-
 
 model Order {
   id              String      @id @default(uuid())
@@ -150,12 +210,28 @@ model Ticket {
   eventId           String
   orderId           String
   ownerId           String
-  seatLabel         String?
-  section           String?
-  ticketType        String?      // <- podemos mantenerlo por compatibilidad, pero ya no será la fuente de verdad
-  ticketTypeId      String?      // <- nuevo FK opcional para no romper boletos viejos
+
+  // ── Asiento numerado (nuevo) ───────────────────────────────
+  // Si seatId está presente, el boleto es para un asiento específico del mapa.
+  // Si es null, el boleto es de acceso general (sin asiento asignado).
+  seatId            String?      // FK → Seat.id  e.g. "CTR-B-05"
+
+  // Campos denormalizados para lectura rápida sin join al mapa
+  seatSection       String?      // "IZQ" | "CTR" | "DER"
+  seatRow           String?      // "A" … "K"
+  seatNumber        Int?         // 1 … 11
+  seatLabel         String?      // "Fila B, Asiento 5"  (generado al crear)
+
+  // ── Compatibilidad con flujo anterior ─────────────────────
+  ticketType        String?      // nombre libre (legacy)
+  ticketTypeId      String?      // FK → TicketType
+
+  // ── Precio capturado al momento de la compra ──────────────
+  // El precio viene de EventSectionPrice (asiento numerado)
+  // o de TicketType.price (acceso general).
   price             Decimal      @db.Decimal(10, 2)
   currency          String       @default("MXN")
+
   status            TicketStatus @default(ACTIVE)
   issuedAt          DateTime     @default(now())
   usedAt            DateTime?
@@ -169,14 +245,17 @@ model Ticket {
   event             Event        @relation(fields: [eventId], references: [id])
   order             Order        @relation(fields: [orderId], references: [id])
   owner             User         @relation("TicketOwner", fields: [ownerId], references: [id])
+  seat              Seat?        @relation(fields: [seatId], references: [id])
+  ticketTypeRef     TicketType?  @relation(fields: [ticketTypeId], references: [id])
   transfers         Transfer[]
   scanLogs          ScanLog[]
-  ticketTypeRef     TicketType?  @relation(fields: [ticketTypeId], references: [id])
 
+  @@unique([eventId, seatId])              // un boleto por asiento por evento
   @@index([eventId])
   @@index([orderId])
   @@index([ownerId])
   @@index([status])
+  @@index([seatId])
   @@index([ticketTypeId])
   @@map("tickets")
 }

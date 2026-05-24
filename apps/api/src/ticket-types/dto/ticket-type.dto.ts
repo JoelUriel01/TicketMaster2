@@ -1,8 +1,11 @@
-// src/ticket-types/dto/create-ticket-type.dto.ts
-import { IsInt, IsOptional, IsPositive, IsString, MaxLength } from 'class-validator';
+// src/ticket-types/dto/ticket-type.dto.ts
+import { IsInt, IsOptional, IsPositive, IsString, IsUUID, MaxLength } from 'class-validator';
 import { Transform } from 'class-transformer';
 
-export class CreateTicketTypeDto {   // ← nombre correcto
+export class TicketTypeDto {
+  @IsUUID()
+  id: string;
+
   @IsString()
   @MaxLength(80)
   name: string;
