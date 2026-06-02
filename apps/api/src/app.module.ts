@@ -10,8 +10,9 @@ import { TransfersModule } from './transfers/transfers.module';
 import { ScansModule } from './scans/scans.module';
 import { TicketTypesModule } from './ticket-types/ticket-types.module';
 import { AdminModule } from './admin/admin.module';
-
-
+import { ScheduleModule } from '@nestjs/schedule';
+import { TasksModule } from './tasks/tasks.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 
 @Module({
@@ -20,6 +21,7 @@ import { AdminModule } from './admin/admin.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+  ScheduleModule.forRoot(),
     HealthModule,
     PrismaModule,
     AuthModule,
@@ -30,7 +32,8 @@ import { AdminModule } from './admin/admin.module';
     ScansModule,
     TicketTypesModule,
     AdminModule,
-
+    TasksModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}

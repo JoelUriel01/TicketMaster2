@@ -25,6 +25,11 @@ export class TicketsService {
     const event = await this.prisma.event.findUnique({ where: { id: dto.eventId } });
     if (!event) throw new NotFoundException('Evento no encontrado');
     if (!event.isPublished) throw new BadRequestException('El evento no está publicado');
+    if (new Date(event.endsAt) < new Date())              // ← agregar
+  throw new BadRequestException('Este evento ya finalizó y no acepta compras.');
+
+
+
 
     // ── MODO MAPA: compra por asientos específicos ────────────────────────────
     if (event.useVenueMap) {
@@ -266,6 +271,7 @@ export class TicketsService {
             venueName: true,
             venueCity: true,
             startsAt: true,
+           endsAt: true,
           },
         },
         order: {
@@ -308,6 +314,7 @@ export class TicketsService {
             venueName: true,
             venueCity: true,
             startsAt: true,
+            endsAt: true,
           },
         },
         owner: {

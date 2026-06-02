@@ -7,12 +7,17 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+
 import { Prisma } from '@prisma/client';
 
 
 @Injectable()
 export class EventsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   // ── CREATE ────────────────────────────────────────────────
   async create(dto: CreateEventDto, organizerId: string) {
@@ -103,7 +108,10 @@ export class EventsService {
   // ── FIND ALL (públicos) ───────────────────────────────────
   async findAll() {
     return this.prisma.event.findMany({
-      where: { isPublished: true },
+      where: {
+        isPublished: true,
+        endsAt: { gt: new Date() }, // ← solo eventos que aún no han terminado
+      },
       orderBy: { startsAt: 'asc' },
       include: {
         organizer: { select: { id: true, fullName: true, email: true } },
@@ -145,6 +153,8 @@ export class EventsService {
       },
     });
     if (!event) throw new NotFoundException('Evento no encontrado');
+    // Tratar eventos terminados como no encontrados — consistente con "ocultar completamente"
+    if (new Date(event.endsAt) < new Date()) throw new NotFoundException('Evento no encontrado');
     return event;
   }
 
@@ -324,13 +334,32 @@ export class EventsService {
   }
 
   // ── PUBLISH / UNPUBLISH ───────────────────────────────────
-  async publish(id: string, requesterId: string) {
+   async publish(id: string, requesterId: string) {
     const event = await this.prisma.event.findUnique({ where: { id } });
     if (!event) throw new NotFoundException('Evento no encontrado');
     if (event.organizerId !== requesterId)
       throw new ForbiddenException('Solo el organizador puede publicar este evento');
-
-    return this.prisma.event.update({ where: { id }, data: { isPublished: true } });
+ 
+    const updated = await this.prisma.event.update({
+      where: { id },
+      data: { isPublished: true },
+    });
+ 
+    // Disparar notificaciones de forma no bloqueante.
+    // Si falla el envío push, la publicación del evento NO se revierte.
+    this.notifications
+      .notifyEventPublished({
+        id:        updated.id,
+        title:     updated.title,
+        venueName: updated.venueName,
+        venueCity: updated.venueCity,
+        startsAt:  updated.startsAt,
+      })
+      .catch((err) =>
+        console.error('[EventsService] Failed to send push notifications:', err),
+      );
+ 
+    return updated;
   }
 
   async unpublish(id: string, requesterId: string) {
