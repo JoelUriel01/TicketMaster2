@@ -113,6 +113,7 @@ model User {
   mfaEnabled        Boolean      @default(false)
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
+  publicKey   String? 
 
   profile           Profile?
   organizedEvents   Event[]      @relation("EventOrganizer")
@@ -272,6 +273,11 @@ model Transfer {
   expiresAt        DateTime
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
+  senderSignature    String? 
+  recipientSignature String?
+  payloadHash        String? 
+  nonce                String?  
+  recipientPayloadHash String?
 
   ticket           Ticket         @relation(fields: [ticketId], references: [id])
   sender           User           @relation("TransferSender", fields: [senderId], references: [id])
