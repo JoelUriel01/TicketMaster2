@@ -7,7 +7,7 @@ import { NotificationsService } from './notifications.service';
 @Module({
   imports: [PrismaModule, AuthModule],
   controllers: [NotificationsController],
-  providers: [NotificationsService],
+  providers: [NotificationsService, ],
   exports: [NotificationsService], // ← EventsModule lo importa para llamar notifyEventPublished()
 })
 export class NotificationsModule {}

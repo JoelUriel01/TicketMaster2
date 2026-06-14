@@ -120,6 +120,35 @@ export class ScansService {
         };
       }
 
+      // Verificar ventana de acceso: solo se permite escanear a partir de 2 h antes del inicio
+      const DOS_HORAS_MS = 2 * 60 * 60 * 1000;
+      const aperturaAcceso = new Date(ticket.event.startsAt.getTime() - DOS_HORAS_MS);
+
+      if (now < aperturaAcceso) {
+        await tx.scanLog.create({
+          data: {
+            ticketId: ticket.id,
+            scannedByUserId: staffUserId,
+            gate: dto.gate,
+            deviceId: dto.deviceId,
+            requestNonce: dto.requestNonce,
+            result: ScanResult.INVALID,
+            reason: 'Escaneo fuera de la ventana de acceso',
+          },
+        });
+
+        const horaApertura = aperturaAcceso.toLocaleTimeString('es-MX', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        return {
+          ok: false,
+          result: ScanResult.INVALID,
+          message: `Acceso disponible a partir de las ${horaApertura} (2 h antes del evento)`,
+          ticketId: ticket.id,
+        };
+      }
+
       // Solo marcar como expirado si endsAt existe Y ya pasó
       if (ticket.event.endsAt && ticket.event.endsAt < now) {
         await tx.scanLog.create({

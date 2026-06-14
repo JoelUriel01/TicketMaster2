@@ -35,6 +35,14 @@ import * as webpush from 'web-push';
 export class NotificationsService implements OnModuleInit {
   private readonly logger = new Logger(NotificationsService.name);
 
+  /**
+   * true solo cuando VAPID está configurado Y el modelo PushSubscription
+   * existe en el cliente Prisma (es decir, la migración ya se corrió).
+   * Si alguno falla, las notificaciones se deshabilitan silenciosamente
+   * en lugar de lanzar un TypeError en runtime.
+   */
+  private pushReady = false;
+
   constructor(private readonly prisma: PrismaService) {}
 
   onModuleInit() {
@@ -50,7 +58,18 @@ export class NotificationsService implements OnModuleInit {
       return;
     }
 
+    // Verificar que el modelo PushSubscription ya existe en el cliente Prisma.
+    // Si no existe, significa que falta correr la migración del schema.
+    if (!(this.prisma as any).pushSubscription) {
+      this.logger.warn(
+        'PushSubscription model not found in Prisma client — push notifications disabled. ' +
+        'Add the model to schema.prisma and run `npx prisma migrate dev`.',
+      );
+      return;
+    }
+
     webpush.setVapidDetails(subject, publicKey, privateKey);
+    this.pushReady = true;
     this.logger.log('Web Push (VAPID) initialized');
   }
 
@@ -64,6 +83,11 @@ export class NotificationsService implements OnModuleInit {
     userId: string,
     subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
   ) {
+    if (!this.pushReady) {
+      this.logger.warn('subscribe() called but push is not ready (missing model or VAPID keys)');
+      return { ok: false };
+    }
+
     await (this.prisma as any).pushSubscription.upsert({
       where: { endpoint: subscription.endpoint },
       update: {
@@ -85,6 +109,8 @@ export class NotificationsService implements OnModuleInit {
 
   // ── UNSUBSCRIBE ──────────────────────────────────────────────────────────────
   async unsubscribe(userId: string, endpoint: string) {
+    if (!this.pushReady) return { ok: false };
+
     await (this.prisma as any).pushSubscription.deleteMany({
       where: { userId, endpoint },
     });
@@ -106,6 +132,11 @@ export class NotificationsService implements OnModuleInit {
     venueCity: string;
     startsAt: Date;
   }) {
+    if (!this.pushReady) {
+      this.logger.log('notifyEventPublished() skipped — push not ready');
+      return;
+    }
+
     const subscriptions = await (this.prisma as any).pushSubscription.findMany();
 
     if (subscriptions.length === 0) {

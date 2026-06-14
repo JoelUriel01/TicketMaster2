@@ -63,11 +63,12 @@ export class EventsService {
 
         const codeToId = Object.fromEntries(sections.map((s) => [s.code, s.id]));
 
+        // Auditorio ESCOM: recinto académico → todos los boletos son gratuitos
         await tx.eventSectionPrice.createMany({
           data: dto.sectionPrices!.map((sp) => ({
             eventId: event.id,
             sectionId: codeToId[sp.sectionCode],
-            price: sp.price,
+            price: 0,
             currency: sp.currency ?? 'MXN',
           })),
         });
@@ -215,11 +216,12 @@ export class EventsService {
               where: {
                 eventId_sectionId: { eventId: id, sectionId: codeToId[sp.sectionCode] },
               },
-              update: { price: sp.price, currency: sp.currency ?? 'MXN' },
+              // Auditorio ESCOM: recinto académico → precio siempre en 0
+              update: { price: 0, currency: sp.currency ?? 'MXN' },
               create: {
                 eventId: id,
                 sectionId: codeToId[sp.sectionCode],
-                price: sp.price,
+                price: 0,
                 currency: sp.currency ?? 'MXN',
               },
             }),
