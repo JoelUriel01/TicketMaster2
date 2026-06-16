@@ -726,10 +726,14 @@ async createAfterPayment(intentId: string) {
   } else {
     const qty = parseInt(quantity);
     const ticketType = await this.prisma.ticketType.findUnique({
-      where: { id: ticketTypeId },
-    });
-    if (!ticketType) return;
-
+  where: { id: ticketTypeId },
+});
+if (!ticketType) {
+  // Lanzar para que el webhook devuelva 500 y Stripe reintente
+  throw new NotFoundException(
+    `TicketType ${ticketTypeId} no encontrado al procesar intent ${intentId}`,
+  );
+}
     await this.prisma.$transaction(async (tx) => {
       for (let i = 0; i < qty; i++) {
         await tx.ticket.create({
