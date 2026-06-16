@@ -6,14 +6,19 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
+import { InitiatePaymentDto } from './dto/initiate-payment.dto';
 import { Prisma, OrderStatus, TicketStatus } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
+import Stripe from 'stripe';  
 
 @Injectable()
 export class TicketsService {
+  private stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+
   ) {}
 
   async create(userId: string, dto: CreateTicketDto) {
@@ -303,6 +308,64 @@ export class TicketsService {
     }));
   }
 
+async findByOrder(userId: string, orderId: string) {
+  // Verificar que la orden pertenece al usuario
+  const order = await this.prisma.order.findFirst({
+    where: { id: orderId, buyerId: userId },
+    select: {
+      id: true,
+      status: true,
+      totalAmount: true,
+      currency: true,
+      createdAt: true,
+      eventId: true,
+    },
+  });
+ 
+  if (!order) throw new NotFoundException('Orden no encontrada');
+ 
+  const tickets = await this.prisma.ticket.findMany({
+    where: { orderId, ownerId: userId },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      event: {
+        select: {
+          id: true,
+          title: true,
+          venueName: true,
+          venueCity: true,
+          startsAt: true,
+        },
+      },
+    },
+  });
+ 
+  return {
+    id: order.id,
+    status: order.status,
+    totalAmount: order.totalAmount.toString(),
+    currency: order.currency,
+    createdAt: order.createdAt,
+    event: tickets[0]?.event ?? null,
+    tickets: tickets.map((t) => ({
+      id: t.id,
+      eventId: t.eventId,
+      orderId: t.orderId,
+      status: t.status,
+      price: t.price.toString(),
+      currency: t.currency,
+      ticketType: t.ticketType ?? undefined,
+      seatLabel: t.seatLabel ?? undefined,
+      seatSection: t.seatSection ?? undefined,
+      seatRow: t.seatRow ?? undefined,
+      seatNumber: t.seatNumber ?? undefined,
+      createdAt: t.createdAt,
+      event: t.event,
+    })),
+  };
+}
+
+
   async findOneMine(userId: string, id: string) {
     const ticket = await this.prisma.ticket.findFirst({
       where: { id, ownerId: userId },
@@ -407,4 +470,289 @@ export class TicketsService {
       expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
     };
   }
+
+  // ─────────────────────────────────────────────────────────────
+// STRIPE: Iniciar pago (crea PaymentIntent y orden PENDING)
+// ─────────────────────────────────────────────────────────────
+async initiatePayment(userId: string, dto: InitiatePaymentDto) {
+  const user = await this.prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new NotFoundException('Usuario no encontrado');
+  if (user.role !== 'BUYER')
+    throw new ForbiddenException('Solo los compradores pueden adquirir boletos');
+
+  const event = await this.prisma.event.findUnique({ where: { id: dto.eventId } });
+  if (!event) throw new NotFoundException('Evento no encontrado');
+  if (!event.isPublished) throw new BadRequestException('El evento no está publicado');
+  if (new Date(event.endsAt) < new Date())
+    throw new BadRequestException('Este evento ya finalizó.');
+
+  let totalAmount: Prisma.Decimal;
+  let currency = 'MXN';
+  const metadata: Record<string, string> = { userId, eventId: dto.eventId };
+
+  if (event.useVenueMap) {
+    if (!dto.seatIds || dto.seatIds.length === 0)
+      throw new BadRequestException('Se requieren seatIds para eventos con mapa');
+
+    const seats = await this.prisma.seat.findMany({
+      where: { id: { in: dto.seatIds } },
+      include: {
+        section: {
+          include: {
+            eventSectionPrices: {
+              where: { eventId: dto.eventId },
+              select: { price: true, currency: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (seats.length !== dto.seatIds.length)
+      throw new BadRequestException('Algunos asientos no fueron encontrados');
+
+    const taken = await this.prisma.ticket.findMany({
+      where: {
+        eventId: dto.eventId,
+        seatId: { in: dto.seatIds },
+        status: { notIn: [TicketStatus.REVOKED, TicketStatus.EXPIRED] },
+      },
+      select: { seatId: true },
+    });
+    if (taken.length > 0)
+      throw new BadRequestException('Algunos asientos ya no están disponibles');
+
+    totalAmount = seats.reduce((sum, seat) => {
+      const sp = seat.section.eventSectionPrices[0];
+      if (!sp)
+        throw new BadRequestException(`Asiento ${seat.id} sin precio configurado`);
+      return sum.add(sp.price);
+    }, new Prisma.Decimal(0));
+
+    currency = seats[0].section.eventSectionPrices[0]?.currency ?? 'MXN';
+    metadata.mode = 'map';
+    metadata.seatIds = dto.seatIds.join(',');
+  } else {
+    const ticketType = await this.prisma.ticketType.findFirst({
+      where: { id: dto.ticketTypeId, eventId: dto.eventId },
+    });
+    if (!ticketType) throw new NotFoundException('Tipo de boleto no encontrado');
+
+    const qty = dto.quantity ?? 1;
+    const soldCount = await this.prisma.ticket.count({
+      where: {
+        eventId: dto.eventId,
+        ticketTypeId: ticketType.id,
+        status: { notIn: [TicketStatus.REVOKED, TicketStatus.EXPIRED] },
+      },
+    });
+    const remaining = ticketType.capacity - soldCount;
+    if (remaining <= 0)
+      throw new BadRequestException(`"${ticketType.name}" está agotado.`);
+    if (qty > remaining)
+      throw new BadRequestException(`Solo quedan ${remaining} lugar(es).`);
+
+    totalAmount = ticketType.price.mul(qty);
+    currency = ticketType.currency ?? 'MXN';
+    metadata.mode = 'classic';
+    metadata.ticketTypeId = ticketType.id;
+    metadata.quantity = qty.toString();
+  }
+
+  // ── Boletos gratuitos: saltar Stripe y crear tickets directamente ────────
+  if (Number(totalAmount) === 0) {
+    const freeOrder = await this.prisma.order.create({
+      data: {
+        buyerId: userId,
+        eventId: dto.eventId,
+        totalAmount,
+        currency,
+        status: 'PENDING',
+      },
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      if (metadata.mode === 'map') {
+        const seats = await tx.seat.findMany({
+          where: { id: { in: dto.seatIds } },
+          include: {
+            section: {
+              include: {
+                eventSectionPrices: {
+                  where: { eventId: dto.eventId },
+                  select: { price: true, currency: true },
+                },
+              },
+            },
+          },
+        });
+        for (const seat of seats) {
+          await tx.ticket.create({
+            data: {
+              eventId: dto.eventId,
+              orderId: freeOrder.id,
+              ownerId: userId,
+              seatId: seat.id,
+              seatSection: seat.section.code,
+              seatRow: seat.row,
+              seatNumber: seat.number,
+              seatLabel: seat.seatLabel ?? `Fila ${seat.row}, Asiento ${seat.number}`,
+              price: new Prisma.Decimal(0),
+              currency,
+              status: TicketStatus.ACTIVE,
+            },
+          });
+        }
+      } else {
+        const ticketType = await tx.ticketType.findFirst({
+          where: { id: dto.ticketTypeId, eventId: dto.eventId },
+        });
+        if (!ticketType) throw new NotFoundException('Tipo de boleto no encontrado');
+        const qty = dto.quantity ?? 1;
+        for (let i = 0; i < qty; i++) {
+          await tx.ticket.create({
+            data: {
+              eventId: dto.eventId,
+              orderId: freeOrder.id,
+              ownerId: userId,
+              price: new Prisma.Decimal(0),
+              currency,
+              ticketTypeId: ticketType.id,
+              ticketType: ticketType.name,
+              status: TicketStatus.ACTIVE,
+            },
+          });
+        }
+      }
+
+      await tx.order.update({
+        where: { id: freeOrder.id },
+        data: { status: OrderStatus.PAID },
+      });
+    });
+
+    return {
+      free: true,
+      clientSecret: null,
+      orderId: freeOrder.id,
+      amount: '0',
+      currency,
+    };
+  }
+  // ── fin boletos gratuitos ────────────────────────────────────────────────
+
+  // Crear orden PENDING en la BD
+  const order = await this.prisma.order.create({
+    data: {
+      buyerId: userId,
+      eventId: dto.eventId,
+      totalAmount,
+      currency,
+      status: 'PENDING',
+    },
+  });
+
+  metadata.orderId = order.id;
+
+  // Crear PaymentIntent en Stripe
+  const paymentIntent = await this.stripe.paymentIntents.create({
+    amount: Math.round(Number(totalAmount) * 100),
+    currency: currency.toLowerCase(),
+    metadata,
+    automatic_payment_methods: { enabled: true },
+  });
+
+  return {
+    free: false,
+    clientSecret: paymentIntent.client_secret,
+    orderId: order.id,
+    amount: totalAmount.toString(),
+    currency,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// STRIPE: Crear tickets tras confirmación del webhook
+// ─────────────────────────────────────────────────────────────
+async createAfterPayment(intentId: string) {
+  const paymentIntent = await this.stripe.paymentIntents.retrieve(intentId);
+  const { orderId, userId, eventId, mode, seatIds, ticketTypeId, quantity } =
+    paymentIntent.metadata;
+
+  // Idempotencia: si ya fue procesado, no hacer nada
+  const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+  if (!order || order.status === OrderStatus.PAID) return;
+
+  if (mode === 'map') {
+    const seatIdList = seatIds.split(',');
+    const seats = await this.prisma.seat.findMany({
+      where: { id: { in: seatIdList } },
+      include: {
+        section: {
+          include: {
+            eventSectionPrices: {
+              where: { eventId },
+              select: { price: true, currency: true },
+            },
+          },
+        },
+      },
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const seat of seats) {
+        const sp = seat.section.eventSectionPrices[0];
+        await tx.ticket.create({
+          data: {
+            eventId,
+            orderId,
+            ownerId: userId,
+            seatId: seat.id,
+            seatSection: seat.section.code,
+            seatRow: seat.row,
+            seatNumber: seat.number,
+            seatLabel: seat.seatLabel ?? `Fila ${seat.row}, Asiento ${seat.number}`,
+            price: sp?.price ?? new Prisma.Decimal(0),
+            currency: sp?.currency ?? 'MXN',
+            status: TicketStatus.ACTIVE,
+          },
+        });
+      }
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.PAID },
+      });
+    });
+  } else {
+    const qty = parseInt(quantity);
+    const ticketType = await this.prisma.ticketType.findUnique({
+      where: { id: ticketTypeId },
+    });
+    if (!ticketType) return;
+
+    await this.prisma.$transaction(async (tx) => {
+      for (let i = 0; i < qty; i++) {
+        await tx.ticket.create({
+          data: {
+            eventId,
+            orderId,
+            ownerId: userId,
+            price: ticketType.price,
+            currency: ticketType.currency ?? 'MXN',
+            ticketTypeId: ticketType.id,
+            ticketType: ticketType.name,
+            status: TicketStatus.ACTIVE,
+          },
+        });
+      }
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.PAID },
+      });
+    });
+  }
+}
+
+
+
 }

@@ -3,6 +3,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TicketsController } from './tickets.controller';
 import { TicketsService } from './tickets.service';
+import { PaymentsWebhookController } from './payments-webhook.controller';
+
 
 @Module({
   imports: [
@@ -12,7 +14,7 @@ import { TicketsService } from './tickets.service';
       signOptions: { algorithm: 'HS256' },
     }),
   ],
-  controllers: [TicketsController],
+  controllers: [TicketsController, PaymentsWebhookController],
   providers: [TicketsService],
 })
 export class TicketsModule {}
